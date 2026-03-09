@@ -25,12 +25,52 @@ const LIGAS_ESPN = [
   { id:'fra.1',    nome:'Ligue 1' },
 ]
 
+// Cache ESPN — evita requisicoes repetidas
+const espnCache = {}
 async function fetchESPN(leagueId, date) {
+  const key = leagueId + '_' + date
+  if (espnCache[key]) return espnCache[key]
   const d = date.replace(/-/g,'')
   const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/${leagueId}/scoreboard?dates=${d}`
-  const res = await fetch(url)
-  const data = await res.json()
-  return data.events || []
+  try {
+    const res = await fetch(url)
+    const data = await res.json()
+    espnCache[key] = data.events || []
+    return espnCache[key]
+  } catch { return [] }
+}
+
+// Busca paralela de varios dias (7x mais rapido que sequencial)
+async function fetchESPNRange(leagueId, days = 7) {
+  const hoje = new Date()
+  const promises = Array.from({length: days}, (_, i) => {
+    const d = new Date(hoje)
+    d.setDate(d.getDate() + i)
+    return fetchESPN(leagueId, d.toISOString().slice(0,10))
+  })
+  const results = await Promise.all(promises)
+  return results.flat()
+}
+
+// Normaliza odds de qualquer bookmaker num formato unico
+function normalizeOdds(bookmakers) {
+  const markets = {}
+  Object.entries(bookmakers || {}).forEach(([book, mklist]) => {
+    const arr = Array.isArray(mklist) ? mklist : Object.values(mklist)
+    arr.forEach(m => {
+      const name = m.name || 'Mercado'
+      if (!markets[name]) markets[name] = {}
+      const odds = m.odds || m.outcomes || []
+      odds.forEach(o => {
+        const label = o.label || o.name || o.side || 'Selecao'
+        const odd = parseFloat(o.price || o.odds || o.odd || 0)
+        if (odd <= 1) return
+        if (!markets[name][label]) markets[name][label] = []
+        markets[name][label].push({ bookmaker: book, label, odd, href: o.href || m.href || null })
+      })
+    })
+  })
+  return markets
 }
 
 // ===================== SHARED COMPONENTS =====================
@@ -479,15 +519,11 @@ function SugestoesTab() {
   async function buscarSugestoes() {
     setLoading(true); setSearched(true); setSugestoes([])
     try {
+      // Promise.all — busca os 7 dias em paralelo (7x mais rapido)
       const hoje = new Date()
-      const todos = []
-      for (let i = 0; i <= 6; i++) {
-        const d = new Date(hoje)
-        d.setDate(d.getDate() + i)
-        const date = d.toISOString().slice(0,10)
-        const events = await fetchESPN(liga.id, date)
-        events.forEach(e => { if (!e.status?.type?.completed) todos.push({...e, _date: date}) })
-      }
+      const dates = Array.from({length:7}, (_,i) => { const d=new Date(hoje); d.setDate(d.getDate()+i); return d.toISOString().slice(0,10) })
+      const results = await Promise.all(dates.map(date => fetchESPN(liga.id, date).then(evs => evs.map(e=>({...e,_date:date})))))
+      const todos = results.flat().filter(e => !e.status?.type?.completed)
 
       const cards = []
       for (const event of todos.slice(0, 25)) {
@@ -853,7 +889,7 @@ function ScoutsTab() {
 
   async function buscar() {
     setLoading(true); setSearched(true); setSelected(null)
-    try { const data = await fetchESPN(liga.id, date); setEvents(data) }
+    try { const data = await fetchESPN(liga.id, date); setEvents(data) } // cache automatico
     catch(e) { setEvents([]) }
     setLoading(false)
   }
@@ -1170,10 +1206,72 @@ function ApostasTab({ bets, userId, onRefresh }) {
   const [sortDir, setSortDir] = useState('desc')
   const [showForm, setShowForm] = useState(false)
   const [editData, setEditData] = useState(null)
-  async function updateStatus(id,status) { const bet=bets.find(b=>b.id===id); const retorno=status==='ganhou'?+(bet.odd*bet.valor).toFixed(2):0; await supabase.from('apostas').update({status,retorno}).eq('id',id); onRefresh() }
-  async function deleteBet(id) { if(!confirm('Excluir esta aposta?')) return; await supabase.from('apostas').delete().eq('id',id); onRefresh() }
-  const counts = useMemo(()=>({todos:bets.length,pendente:bets.filter(b=>b.status==='pendente').length,ganhou:bets.filter(b=>b.status==='ganhou').length,perdeu:bets.filter(b=>b.status==='perdeu').length}),[bets])
-  const filtered = useMemo(()=>{ let list=filter==='todos'?bets:bets.filter(b=>b.status===filter); if(search) list=list.filter(b=>b.evento?.toLowerCase().includes(search.toLowerCase())||b.selecao?.toLowerCase().includes(search.toLowerCase())||b.casa?.toLowerCase().includes(search.toLowerCase())); return [...list].sort((a,b)=>{ let av=a[sortField],bv=b[sortField]; if(typeof av==='string') return sortDir==='asc'?av.localeCompare(bv):bv.localeCompare(av); return sortDir==='asc'?av-bv:bv-av }) },[bets,filter,search,sortField,sortDir])
+  const [localBets, setLocalBets] = useState(bets)
+  const [verificando, setVerificando] = useState(false)
+  const [verificMsg, setVerificMsg] = useState('')
+
+  useEffect(() => { setLocalBets(bets) }, [bets])
+
+  // Atualização otimista — UI instantânea, sync com Supabase em background
+  async function updateStatus(id, status) {
+    const bet = localBets.find(b => b.id === id)
+    if (!bet) return
+    const retorno = status === 'ganhou' ? +(bet.odd * bet.valor).toFixed(2) : 0
+    // Atualiza local primeiro (sem esperar Supabase)
+    setLocalBets(prev => prev.map(b => b.id===id ? {...b, status, retorno} : b))
+    // Sync em background
+    await supabase.from('apostas').update({status, retorno}).eq('id', id)
+    onRefresh()
+  }
+
+  async function deleteBet(id) {
+    if (!confirm('Excluir esta aposta?')) return
+    setLocalBets(prev => prev.filter(b => b.id !== id))
+    await supabase.from('apostas').delete().eq('id', id)
+    onRefresh()
+  }
+
+  // Verificação automática de resultados via ESPN
+  async function verificarResultados() {
+    setVerificando(true); setVerificMsg('')
+    const pendentes = localBets.filter(b => b.status === 'pendente' && b.data <= new Date().toISOString().slice(0,10))
+    if (pendentes.length === 0) { setVerificMsg('Nenhuma aposta pendente para verificar.'); setVerificando(false); return }
+    let atualizadas = 0
+    for (const bet of pendentes) {
+      try {
+        // Busca jogos do dia da aposta nas ligas ESPN
+        const ligas = ['bra.1','bra.2','bra.3','conmebol.libertadores','uefa.champions','eng.1','esp.1','ita.1','ger.1']
+        for (const liga of ligas) {
+          const events = await fetchESPN(liga, bet.data)
+          const termos = bet.evento?.toLowerCase().split(/\s+x\s+|\s+vs\s+/) || []
+          const match = events.find(ev => {
+            const comps = ev.competitions?.[0]?.competitors || []
+            return termos.some(t => comps.some(c => c.team?.displayName?.toLowerCase().includes(t?.trim())))
+          })
+          if (match && match.status?.type?.completed) {
+            const comps = match.competitions?.[0]?.competitors || []
+            const home = comps.find(c=>c.homeAway==='home')
+            const away = comps.find(c=>c.homeAway==='away')
+            const hScore = parseInt(home?.score||0)
+            const aScore = parseInt(away?.score||0)
+            const totalGols = hScore + aScore
+            const sel = bet.selecao?.toLowerCase() || ''
+            let novoStatus = null
+            if (sel.includes('over 2.5')) novoStatus = totalGols > 2 ? 'ganhou' : 'perdeu'
+            else if (sel.includes('over 1.5')) novoStatus = totalGols > 1 ? 'ganhou' : 'perdeu'
+            else if (sel.includes('ambas')) novoStatus = hScore>0 && aScore>0 ? 'ganhou' : 'perdeu'
+            else if (sel.includes(home?.team?.displayName?.toLowerCase()||'casa')) novoStatus = hScore>aScore?'ganhou':'perdeu'
+            else if (sel.includes(away?.team?.displayName?.toLowerCase()||'fora')) novoStatus = aScore>hScore?'ganhou':'perdeu'
+            if (novoStatus) { await updateStatus(bet.id, novoStatus); atualizadas++; break }
+          }
+        }
+      } catch(e) {}
+    }
+    setVerificMsg(atualizadas > 0 ? `${atualizadas} aposta(s) atualizada(s) automaticamente!` : 'Nenhum resultado encontrado via ESPN. Atualize manualmente.')
+    setVerificando(false)
+  }
+  const counts = useMemo(()=>({todos:localBets.length,pendente:localBets.filter(b=>b.status==='pendente').length,ganhou:localBets.filter(b=>b.status==='ganhou').length,perdeu:localBets.filter(b=>b.status==='perdeu').length}),[localBets])
+  const filtered = useMemo(()=>{ let list=filter==='todos'?localBets:localBets.filter(b=>b.status===filter); if(search) list=list.filter(b=>b.evento?.toLowerCase().includes(search.toLowerCase())||b.selecao?.toLowerCase().includes(search.toLowerCase())||b.casa?.toLowerCase().includes(search.toLowerCase())); return [...list].sort((a,b)=>{ let av=a[sortField],bv=b[sortField]; if(typeof av==='string') return sortDir==='asc'?av.localeCompare(bv):bv.localeCompare(av); return sortDir==='asc'?av-bv:bv-av }) },[localBets,filter,search,sortField,sortDir])
   function hs(f){if(sortField===f) setSortDir(d=>d==='asc'?'desc':'asc'); else{setSortField(f);setSortDir('desc')}}
   return (
     <>
@@ -1183,7 +1281,11 @@ function ApostasTab({ bets, userId, onRefresh }) {
         ))}
         <input placeholder="Buscar..." value={search} onChange={e=>setSearch(e.target.value)} style={{...inp,width:180,marginLeft:'auto'}}/>
         <button onClick={()=>exportCSV(filtered)} style={{background:'#1a2030',border:'1px solid #2a3048',color:'#8892a4',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontSize:12,fontWeight:600,whiteSpace:'nowrap'}}>Exportar CSV</button>
+        <button onClick={verificarResultados} disabled={verificando} style={{background:verificando?'#1a2030':'#1a2a1a',border:'1px solid #00e67644',color:'#00e676',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontSize:12,fontWeight:700,whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:5}}>
+          {verificando ? '⏳ Verificando...' : '🔍 Verificar Resultados'}
+        </button>
       </div>
+      {verificMsg && <div style={{marginBottom:12,padding:'9px 14px',background:verificMsg.includes('atualizada')?'#00e67611':'#ffab0011',border:`1px solid ${verificMsg.includes('atualizada')?'#00e67633':'#ffab0033'}`,borderRadius:8,fontSize:12,color:verificMsg.includes('atualizada')?'#00e676':'#ffab00',fontWeight:600}}>{verificMsg}</div>}
       <div style={{background:'#111724',borderRadius:16,border:'1px solid #1e2538',overflowX:'auto'}}>
         <table style={{width:'100%',borderCollapse:'collapse',minWidth:820}}>
           <thead>
