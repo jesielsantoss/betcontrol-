@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { supabase } from './supabaseClient'
 import Auth from './Auth.jsx'
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts'
@@ -38,39 +38,52 @@ function exportCSV(bets) {
 }
 
 function BetForm({ editData, userId, onSave, onClose }) {
-  const [form, setForm] = useState(editData || { data:new Date().toISOString().slice(0,10),evento:'',esporte:'Futebol',mercado:'',selecao:'',casa:'Bet365',tipo:'simples',odd:'',valor:'',status:'pendente',observacao:'' })
   const [saving, setSaving] = useState(false)
+  const r = {
+    data: useRef(), evento: useRef(), esporte: useRef(), mercado: useRef(),
+    selecao: useRef(), casa: useRef(), tipo: useRef(), odd: useRef(),
+    valor: useRef(), status: useRef(), observacao: useRef()
+  }
 
   async function handleSave() {
-    if (!form.evento||!form.odd||!form.valor) return
+    const evento = r.evento.current.value
+    const odd = parseFloat(r.odd.current.value)
+    const valor = parseFloat(r.valor.current.value)
+    if (!evento || !odd || !valor) return alert('Preencha Evento, Odd e Valor')
     setSaving(true)
-    const odd=parseFloat(form.odd),valor=parseFloat(form.valor)
-    const retorno=form.status==='ganhou'?+(odd*valor).toFixed(2):form.status==='perdeu'?0:null
-    const payload={...form,odd,valor,retorno,user_id:userId}
-    if (editData?.id) await supabase.from('apostas').update(payload).eq('id',editData.id)
+    const status = r.status.current.value
+    const retorno = status==='ganhou' ? +(odd*valor).toFixed(2) : status==='perdeu' ? 0 : null
+    const payload = {
+      data: r.data.current.value, evento,
+      esporte: r.esporte.current.value, mercado: r.mercado.current.value,
+      selecao: r.selecao.current.value, casa: r.casa.current.value,
+      tipo: r.tipo.current.value, odd, valor, status, retorno,
+      observacao: r.observacao.current.value, user_id: userId
+    }
+    if (editData?.id) await supabase.from('apostas').update(payload).eq('id', editData.id)
     else await supabase.from('apostas').insert(payload)
     setSaving(false); onSave()
   }
 
-  const set = (k) => (e) => setForm(f=>({...f,[k]:e.target.value}))
   const lbl = (t) => <label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>{t}</label>
+  const dv = (k) => editData?.[k] ?? ''
 
   return (
     <div style={{position:'fixed',inset:0,background:'#000000cc',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999,backdropFilter:'blur(4px)',padding:16}}>
       <div style={{background:'#141928',border:'1px solid #2a3048',borderRadius:18,padding:28,width:'100%',maxWidth:500,maxHeight:'90vh',overflowY:'auto'}}>
         <div style={{fontSize:17,fontWeight:800,marginBottom:22}}>{editData?.id?'✏️ Editar Aposta':'🎯 Nova Aposta'}</div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:13}}>
-          <div>{lbl('DATA')}<input type="date" value={form.data} onChange={set('data')} style={inp} /></div>
-          <div>{lbl('STATUS')}<select value={form.status} onChange={set('status')} style={inp}><option>pendente</option><option>ganhou</option><option>perdeu</option></select></div>
-          <div style={{gridColumn:'1 / span 2'}}>{lbl('EVENTO / JOGO')}<input type="text" value={form.evento} onChange={set('evento')} style={inp} /></div>
-          <div>{lbl('ESPORTE')}<select value={form.esporte} onChange={set('esporte')} style={inp}>{ESPORTES.map(o=><option key={o}>{o}</option>)}</select></div>
-          <div>{lbl('CASA DE APOSTAS')}<select value={form.casa} onChange={set('casa')} style={inp}>{CASAS.map(o=><option key={o}>{o}</option>)}</select></div>
-          <div>{lbl('TIPO')}<select value={form.tipo} onChange={set('tipo')} style={inp}><option>simples</option><option>múltipla</option><option>ao vivo</option></select></div>
-          <div>{lbl('MERCADO')}<input type="text" value={form.mercado} onChange={set('mercado')} style={inp} /></div>
-          <div>{lbl('SELEÇÃO')}<input type="text" value={form.selecao} onChange={set('selecao')} style={inp} /></div>
-          <div>{lbl('ODD')}<input type="number" step="0.01" value={form.odd} onChange={set('odd')} style={inp} /></div>
-          <div>{lbl('VALOR (R$)')}<input type="number" step="0.01" value={form.valor} onChange={set('valor')} style={inp} /></div>
-          <div style={{gridColumn:'1 / span 2'}}>{lbl('OBSERVAÇÃO')}<input type="text" value={form.observacao} onChange={set('observacao')} style={inp} /></div>
+          <div>{lbl('DATA')}<input ref={r.data} type="date" defaultValue={editData?.data ?? new Date().toISOString().slice(0,10)} style={inp}/></div>
+          <div>{lbl('STATUS')}<select ref={r.status} defaultValue={dv('status') || 'pendente'} style={inp}><option>pendente</option><option>ganhou</option><option>perdeu</option></select></div>
+          <div style={{gridColumn:'1 / span 2'}}>{lbl('EVENTO / JOGO')}<input ref={r.evento} type="text" defaultValue={dv('evento')} style={inp}/></div>
+          <div>{lbl('ESPORTE')}<select ref={r.esporte} defaultValue={dv('esporte') || 'Futebol'} style={inp}>{ESPORTES.map(o=><option key={o}>{o}</option>)}</select></div>
+          <div>{lbl('CASA DE APOSTAS')}<select ref={r.casa} defaultValue={dv('casa') || 'Bet365'} style={inp}>{CASAS.map(o=><option key={o}>{o}</option>)}</select></div>
+          <div>{lbl('TIPO')}<select ref={r.tipo} defaultValue={dv('tipo') || 'simples'} style={inp}><option>simples</option><option>múltipla</option><option>ao vivo</option></select></div>
+          <div>{lbl('MERCADO')}<input ref={r.mercado} type="text" defaultValue={dv('mercado')} style={inp}/></div>
+          <div>{lbl('SELEÇÃO')}<input ref={r.selecao} type="text" defaultValue={dv('selecao')} style={inp}/></div>
+          <div>{lbl('ODD')}<input ref={r.odd} type="number" step="0.01" defaultValue={dv('odd')} style={inp}/></div>
+          <div>{lbl('VALOR (R$)')}<input ref={r.valor} type="number" step="0.01" defaultValue={dv('valor')} style={inp}/></div>
+          <div style={{gridColumn:'1 / span 2'}}>{lbl('OBSERVAÇÃO')}<input ref={r.observacao} type="text" defaultValue={dv('observacao')} style={inp}/></div>
         </div>
         <div style={{display:'flex',gap:10,marginTop:22}}>
           <button onClick={onClose} style={{flex:1,background:'transparent',border:'1px solid #2a3048',color:'#8892a4',borderRadius:10,padding:12,cursor:'pointer',fontWeight:600}}>Cancelar</button>
