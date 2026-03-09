@@ -9,6 +9,122 @@ const ESPORTES = ['Futebol','Basquete','Tênis','Vôlei','MMA/UFC','E-Sports','O
 const CASAS = ['Bet365','Sportingbet','Betano','KTO','Novibet','Blaze','Vaidebet','Outra']
 const CHART_COLORS = ['#7c8cff','#00e676','#ffab00','#ff1744','#00bcd4','#e040fb']
 const inp = { background:'#0f1320',border:'1px solid #2a3048',borderRadius:8,color:'#e8eaf6',padding:'9px 12px',fontSize:14,outline:'none',width:'100%',fontFamily:'inherit' }
+const API_KEY = '86d9281a82cf1b2bd8ad1afc6f5a6edc'
+const API_URL = 'https://v3.football.api-sports.io'
+
+// Ligas disponíveis
+const LIGAS = [
+  { id: 71,  nome: '🇧🇷 Brasileirão Série A', season: 2025 },
+  { id: 72,  nome: '🇧🇷 Brasileirão Série B', season: 2025 },
+  { id: 73,  nome: '🇧🇷 Copa do Brasil',       season: 2025 },
+  { id: 13,  nome: '🌍 Libertadores',           season: 2025 },
+  { id: 2,   nome: '🏆 Champions League',       season: 2024 },
+  { id: 39,  nome: '🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier League',      season: 2024 },
+  { id: 140, nome: '🇪🇸 La Liga',               season: 2024 },
+  { id: 135, nome: '🇮🇹 Serie A',               season: 2024 },
+  { id: 78,  nome: '🇩🇪 Bundesliga',            season: 2024 },
+  { id: 61,  nome: '🇫🇷 Ligue 1',              season: 2024 },
+]
+
+async function fetchFixtures(leagueId, season, date) {
+  const res = await fetch(`${API_URL}/fixtures?league=${leagueId}&season=${season}&date=${date}`, {
+    headers: { 'x-apisports-key': API_KEY }
+  })
+  const data = await res.json()
+  return data.response || []
+}
+
+function MatchSearch({ onSelect }) {
+  const [open, setOpen] = useState(false)
+  const [liga, setLiga] = useState(LIGAS[0])
+  const [date, setDate] = useState(new Date().toISOString().slice(0,10))
+  const [fixtures, setFixtures] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [searched, setSearched] = useState(false)
+
+  async function buscar() {
+    setLoading(true); setSearched(true)
+    const data = await fetchFixtures(liga.id, liga.season, date)
+    setFixtures(data); setLoading(false)
+  }
+
+  function selecionar(f) {
+    const home = f.teams.home.name
+    const away = f.teams.away.name
+    const comp = f.league.name
+    onSelect({
+      evento: `${home} x ${away}`,
+      esporte: 'Futebol',
+      data: date,
+      mercado: comp,
+    })
+    setOpen(false)
+  }
+
+  return (
+    <div style={{gridColumn:'1 / span 2',marginBottom:4}}>
+      <button type="button" onClick={()=>setOpen(o=>!o)} style={{width:'100%',background:'#1a2540',border:'1px solid #3d5afe44',color:'#7c8cff',borderRadius:8,padding:'9px 14px',cursor:'pointer',fontWeight:700,fontSize:13,textAlign:'left',display:'flex',alignItems:'center',gap:8}}>
+        🔍 Buscar partida ao vivo / hoje
+        <span style={{marginLeft:'auto',fontSize:11,color:'#8892a4'}}>{open?'▲':'▼'}</span>
+      </button>
+
+      {open && (
+        <div style={{background:'#0f1320',border:'1px solid #2a3048',borderRadius:10,padding:14,marginTop:8}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr auto auto',gap:8,marginBottom:10,alignItems:'end'}}>
+            <div>
+              <label style={{fontSize:10,color:'#8892a4',fontWeight:700,display:'block',marginBottom:4}}>COMPETIÇÃO</label>
+              <select value={liga.id} onChange={e=>setLiga(LIGAS.find(l=>l.id===+e.target.value))} style={{...inp,fontSize:12}}>
+                {LIGAS.map(l=><option key={l.id} value={l.id}>{l.nome}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{fontSize:10,color:'#8892a4',fontWeight:700,display:'block',marginBottom:4}}>DATA</label>
+              <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{...inp,fontSize:12,width:140}}/>
+            </div>
+            <button type="button" onClick={buscar} disabled={loading} style={{background:'linear-gradient(135deg,#3d5afe,#651fff)',border:'none',color:'#fff',borderRadius:8,padding:'9px 16px',cursor:'pointer',fontWeight:700,fontSize:12,whiteSpace:'nowrap'}}>
+              {loading?'Buscando...':'Buscar'}
+            </button>
+          </div>
+
+          {searched && !loading && fixtures.length===0 && (
+            <div style={{textAlign:'center',color:'#8892a4',padding:20,fontSize:13}}>Nenhuma partida encontrada para esta data.</div>
+          )}
+
+          {fixtures.length>0 && (
+            <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:260,overflowY:'auto'}}>
+              {fixtures.map(f=>{
+                const hora = new Date(f.fixture.date).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})
+                const status = f.fixture.status.short
+                const ao_vivo = ['1H','HT','2H','ET','P'].includes(status)
+                const encerrado = status==='FT'
+                return (
+                  <button type="button" key={f.fixture.id} onClick={()=>selecionar(f)}
+                    style={{background:'#141928',border:'1px solid #2a3048',borderRadius:8,padding:'10px 14px',cursor:'pointer',textAlign:'left',display:'flex',alignItems:'center',gap:10,transition:'border-color 0.15s'}}
+                    onMouseEnter={e=>e.currentTarget.style.borderColor='#3d5afe'}
+                    onMouseLeave={e=>e.currentTarget.style.borderColor='#2a3048'}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,fontWeight:700,color:'#e8eaf6'}}>
+                        {f.teams.home.name} <span style={{color:'#8892a4',fontWeight:400}}>x</span> {f.teams.away.name}
+                      </div>
+                      <div style={{fontSize:11,color:'#8892a4',marginTop:2}}>{f.league.name} · {f.league.round}</div>
+                    </div>
+                    <div style={{textAlign:'right',flexShrink:0}}>
+                      {ao_vivo
+                        ? <span style={{background:'#ff174422',color:'#ff5252',border:'1px solid #ff174444',borderRadius:5,padding:'2px 7px',fontSize:10,fontWeight:700}}>● AO VIVO</span>
+                        : encerrado
+                        ? <span style={{color:'#8892a4',fontSize:11}}>{f.goals.home} - {f.goals.away}<br/><span style={{fontSize:10}}>Encerrado</span></span>
+                        : <span style={{color:'#ffab00',fontSize:12,fontWeight:600}}>{hora}</span>}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 function Badge({ status }) {
   return <span style={{ background:STATUS_COLORS[status]+'22',color:STATUS_COLORS[status],border:`1px solid ${STATUS_COLORS[status]}44`,borderRadius:6,padding:'2px 10px',fontSize:11,fontWeight:700,letterSpacing:1,textTransform:'uppercase' }}>{STATUS_LABELS[status]}</span>
@@ -45,6 +161,13 @@ function BetForm({ editData, userId, onSave, onClose }) {
     valor: useRef(), status: useRef(), observacao: useRef()
   }
 
+  function preencherPartida({ evento, esporte, data, mercado }) {
+    if (r.evento.current) r.evento.current.value = evento
+    if (r.esporte.current) r.esporte.current.value = esporte
+    if (r.data.current) r.data.current.value = data
+    if (r.mercado.current) r.mercado.current.value = mercado
+  }
+
   async function handleSave() {
     const evento = r.evento.current.value
     const odd = parseFloat(r.odd.current.value)
@@ -70,9 +193,10 @@ function BetForm({ editData, userId, onSave, onClose }) {
 
   return (
     <div style={{position:'fixed',inset:0,background:'#000000cc',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999,backdropFilter:'blur(4px)',padding:16}}>
-      <div style={{background:'#141928',border:'1px solid #2a3048',borderRadius:18,padding:28,width:'100%',maxWidth:500,maxHeight:'90vh',overflowY:'auto'}}>
-        <div style={{fontSize:17,fontWeight:800,marginBottom:22}}>{editData?.id?'✏️ Editar Aposta':'🎯 Nova Aposta'}</div>
+      <div style={{background:'#141928',border:'1px solid #2a3048',borderRadius:18,padding:28,width:'100%',maxWidth:520,maxHeight:'92vh',overflowY:'auto'}}>
+        <div style={{fontSize:17,fontWeight:800,marginBottom:18}}>{editData?.id?'✏️ Editar Aposta':'🎯 Nova Aposta'}</div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:13}}>
+          {!editData?.id && <MatchSearch onSelect={preencherPartida}/>}
           <div>{lbl('DATA')}<input ref={r.data} type="date" defaultValue={editData?.data ?? new Date().toISOString().slice(0,10)} style={inp}/></div>
           <div>{lbl('STATUS')}<select ref={r.status} defaultValue={dv('status') || 'pendente'} style={inp}><option>pendente</option><option>ganhou</option><option>perdeu</option></select></div>
           <div style={{gridColumn:'1 / span 2'}}>{lbl('EVENTO / JOGO')}<input ref={r.evento} type="text" defaultValue={dv('evento')} style={inp}/></div>
@@ -271,3 +395,4 @@ export default function App() {
   if(session===undefined) return <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#0b0e1a'}}><div style={{color:'#8892a4'}}>Carregando...</div></div>
   return session?<BetApp user={session.user}/>:<Auth/>
 }
+
