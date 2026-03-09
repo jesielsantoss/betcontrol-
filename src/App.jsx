@@ -255,13 +255,21 @@ function ComparadorTab() {
     if (!busca.trim()) return
     setLoadingEventos(true); setErroMsg(''); setEventos([]); setEventoSel(null); setOddsData(null)
     try {
-      const res = await fetch(`/api/odds?endpoint=events&sport=football&search=${encodeURIComponent(busca)}&limit=10`)
+      const res = await fetch(`/api/odds?endpoint=events&sport=football&limit=50`)
       const data = await res.json()
-      if (data.error) { setErroMsg(data.error); setLoadingEventos(false); return }
+      if (data.error) { setErroMsg('Erro da API: ' + data.error); setLoadingEventos(false); return }
       const lista = Array.isArray(data) ? data : (data.events || data.data || [])
-      setEventos(lista)
-      if (lista.length === 0) setErroMsg('Nenhum evento encontrado. Tente outro nome.')
-    } catch(e) { setErroMsg('Erro ao buscar eventos. Verifique a conexao.') }
+      // filtrar pelo termo buscado no frontend
+      const termo = busca.toLowerCase()
+      const filtrados = lista.filter(ev =>
+        (ev.home||'').toLowerCase().includes(termo) ||
+        (ev.away||'').toLowerCase().includes(termo) ||
+        (ev.league||'').toLowerCase().includes(termo) ||
+        (ev.name||'').toLowerCase().includes(termo)
+      )
+      setEventos(filtrados)
+      if (filtrados.length === 0) setErroMsg(lista.length === 0 ? 'API nao retornou eventos. Verifique se ODDS_API_KEY esta configurada no Vercel.' : `Nenhum jogo encontrado com "${busca}". Tente: "Manchester", "Real Madrid", "Flamengo"...`)
+    } catch(e) { setErroMsg('Erro de conexao: ' + e.message) }
     setLoadingEventos(false)
   }
 
