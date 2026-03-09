@@ -17,12 +17,12 @@ const LIGAS = [
   { id: 72,  nome: 'Brasileirao Serie B', season: 2025 },
   { id: 73,  nome: 'Copa do Brasil',      season: 2025 },
   { id: 13,  nome: 'Libertadores',        season: 2025 },
-  { id: 2,   nome: 'Champions League',    season: 2024 },
-  { id: 39,  nome: 'Premier League',      season: 2024 },
+  { id: 2,   nome: "Champions League",    season: 2025 },
+  { id: 39,  nome: "Premier League",      season: 2025 },
   { id: 140, nome: 'La Liga',             season: 2024 },
-  { id: 135, nome: 'Serie A',             season: 2024 },
-  { id: 78,  nome: 'Bundesliga',          season: 2024 },
-  { id: 61,  nome: 'Ligue 1',             season: 2024 },
+  { id: 135, nome: "Serie A",             season: 2025 },
+  { id: 78,  nome: "Bundesliga",          season: 2025 },
+  { id: 61,  nome: "Ligue 1",             season: 2025 },
 ]
 
 async function apiGet(path) {
