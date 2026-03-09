@@ -235,156 +235,215 @@ function DashboardTab({ bets, onNewBet, onTabChange }) {
 
 // ===================== COMPARADOR DE ODDS =====================
 function ComparadorTab() {
-  const [evento, setEvento] = useState('')
-  const [mercado, setMercado] = useState('Resultado Final')
-  const [selecao, setSelecao] = useState('')
-  const [linhas, setLinhas] = useState([
-    {casa:'Bet365', odd:''},
-    {casa:'Betano', odd:''},
-    {casa:'Sportingbet', odd:''},
-    {casa:'KTO', odd:''},
-  ])
+  const [busca, setBusca] = useState('')
+  const [eventos, setEventos] = useState([])
+  const [loadingEventos, setLoadingEventos] = useState(false)
+  const [eventoSel, setEventoSel] = useState(null)
+  const [oddsData, setOddsData] = useState(null)
+  const [loadingOdds, setLoadingOdds] = useState(false)
+  const [mercadoSel, setMercadoSel] = useState('moneyline')
+  const [erroMsg, setErroMsg] = useState('')
 
-  const MERCADOS = ['Resultado Final','Over/Under 2.5','Ambas Marcam','Handicap','Dupla Hipotese','Marcador','Over/Under 1.5','Over/Under 3.5']
+  const MERCADOS_API = [
+    { key:'moneyline', label:'Resultado Final (1X2)' },
+    { key:'totals', label:'Over/Under Gols' },
+    { key:'btts', label:'Ambas Marcam' },
+    { key:'asian_handicap', label:'Handicap Asiatico' },
+  ]
 
-  function updateLinha(i, field, value) {
-    setLinhas(ls => ls.map((l,idx) => idx===i ? {...l,[field]:value} : l))
+  async function buscarEventos() {
+    if (!busca.trim()) return
+    setLoadingEventos(true); setErroMsg(''); setEventos([]); setEventoSel(null); setOddsData(null)
+    try {
+      const res = await fetch(`/api/odds?endpoint=events&sport=football&search=${encodeURIComponent(busca)}&limit=10`)
+      const data = await res.json()
+      if (data.error) { setErroMsg(data.error); setLoadingEventos(false); return }
+      const lista = Array.isArray(data) ? data : (data.events || data.data || [])
+      setEventos(lista)
+      if (lista.length === 0) setErroMsg('Nenhum evento encontrado. Tente outro nome.')
+    } catch(e) { setErroMsg('Erro ao buscar eventos. Verifique a conexao.') }
+    setLoadingEventos(false)
   }
 
-  function addLinha() {
-    setLinhas(ls => [...ls, {casa:'', odd:''}])
-  }
-
-  function removeLinha(i) {
-    setLinhas(ls => ls.filter((_,idx)=>idx!==i))
+  async function buscarOdds(event) {
+    setEventoSel(event); setLoadingOdds(true); setOddsData(null); setErroMsg('')
+    try {
+      const res = await fetch(`/api/odds?endpoint=odds&eventId=${event.id}&bookmakers=Bet365,Betano,Unibet,Bwin,William+Hill,Betway,Pinnacle,1xBet,Betfair`)
+      const data = await res.json()
+      if (data.error) { setErroMsg('Erro ao buscar odds: ' + data.error); setLoadingOdds(false); return }
+      setOddsData(data)
+    } catch(e) { setErroMsg('Erro ao buscar odds.') }
+    setLoadingOdds(false)
   }
 
   const analise = useMemo(() => {
-    const validas = linhas.filter(l => l.casa && parseFloat(l.odd) > 1)
-    if (validas.length < 2) return null
+    if (!oddsData?.bookmakers) return null
+    const bms = oddsData.bookmakers
 
-    const odds = validas.map(l => ({...l, odd: parseFloat(l.odd)}))
-    const melhor = odds.reduce((a,b) => b.odd > a.odd ? b : a)
-    const pior = odds.reduce((a,b) => b.odd < a.odd ? b : a)
-    const media = odds.reduce((s,l)=>s+l.odd,0)/odds.length
-    const impliedProbs = odds.map(l => ({...l, prob: +(100/l.odd).toFixed(1)}))
-    const probMedia = +(100/media).toFixed(1)
-    const diferenca = +(((melhor.odd - pior.odd)/pior.odd)*100).toFixed(1)
-    const evMelhor = +(melhor.odd * (probMedia/100) - 1).toFixed(3)
+    // extrair odds do mercado selecionado
+    const linhas = []
+    Object.entries(bms).forEach(([casa, markets]) => {
+      const mkArr = Array.isArray(markets) ? markets : Object.values(markets)
+      const mk = mkArr.find(m => m.name?.toLowerCase().includes(mercadoSel==='moneyline'?'money':mercadoSel==='totals'?'total':mercadoSel==='btts'?'both':mercadoSel))
+        || mkArr[0]
+      if (!mk) return
+      const odds = mk.odds || mk.outcomes || []
+      odds.forEach(o => {
+        const label = o.label || o.name || o.side || ''
+        const odd = parseFloat(o.price || o.odds || o.odd || 0)
+        if (odd > 1) linhas.push({ casa, label, odd, href: bms[casa]?.href || mk.href || null })
+      })
+    })
 
-    return { odds, melhor, pior, media: +media.toFixed(3), impliedProbs, probMedia, diferenca, evMelhor }
-  },[linhas])
+    if (linhas.length < 2) return null
+
+    // agrupar por selecao
+    const grupos = {}
+    linhas.forEach(l => {
+      const key = l.label?.toLowerCase()
+      if (!grupos[key]) grupos[key] = []
+      grupos[key].push(l)
+    })
+
+    return { grupos, linhas, mercado: MERCADOS_API.find(m=>m.key===mercadoSel)?.label || mercadoSel }
+  }, [oddsData, mercadoSel])
+
+  function renderGrupo(label, items) {
+    if (!items || items.length < 2) return null
+    const sorted = [...items].sort((a,b) => b.odd - a.odd)
+    const melhor = sorted[0]
+    const pior = sorted[sorted.length-1]
+    const media = items.reduce((s,i)=>s+i.odd,0)/items.length
+    const probMedia = 100/media
+    const diferenca = +(((melhor.odd-pior.odd)/pior.odd)*100).toFixed(1)
+
+    return (
+      <div key={label} style={{marginBottom:20}}>
+        <div style={{fontSize:12,fontWeight:700,color:'#8892a4',letterSpacing:1,marginBottom:10,textTransform:'uppercase'}}>{label}</div>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {sorted.map((item,i) => {
+            const ev = (item.odd * (probMedia/100)) - 1
+            const isMelhor = i===0
+            return (
+              <div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',background:isMelhor?'#00e67608':'#0f1320',border:`1px solid ${isMelhor?'#00e67633':'#1e2538'}`,borderRadius:12,transition:'all 0.15s'}}>
+                {isMelhor && <div style={{width:4,height:36,background:'#00e676',borderRadius:2,flexShrink:0,boxShadow:'0 0 8px #00e67666'}}/>}
+                <div style={{flex:1}}>
+                  <div style={{fontSize:14,fontWeight:700,color:isMelhor?'#00e676':'#e8eaf6'}}>{item.casa}</div>
+                  <div style={{fontSize:10,color:'#8892a4',marginTop:1}}>Prob impl: {(100/item.odd).toFixed(1)}%</div>
+                </div>
+                {item.href && (
+                  <a href={item.href} target="_blank" rel="noreferrer"
+                    style={{fontSize:10,color:'#3d5afe',border:'1px solid #3d5afe44',borderRadius:6,padding:'2px 8px',textDecoration:'none',fontWeight:600,flexShrink:0}}
+                    onClick={e=>e.stopPropagation()}>
+                    Apostar
+                  </a>
+                )}
+                <div style={{textAlign:'center',minWidth:54}}>
+                  <div style={{fontSize:22,fontWeight:900,color:isMelhor?'#00e676':'#e8eaf6',fontFamily:"'Bebas Neue',cursive"}}>{item.odd.toFixed(2)}</div>
+                </div>
+                <div style={{textAlign:'right',minWidth:76}}>
+                  <div style={{fontSize:12,fontWeight:700,color:ev>0.02?'#00e676':ev>-0.02?'#ffab00':'#ff5252'}}>EV {ev>0?'+':''}{(ev*100).toFixed(1)}%</div>
+                  {isMelhor
+                    ? <div style={{fontSize:10,color:'#00e676',fontWeight:700}}>MELHOR</div>
+                    : <div style={{fontSize:10,color:'#8892a4'}}>-{(((melhor.odd-item.odd)/melhor.odd)*100).toFixed(1)}%</div>}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        {diferenca > 0 && (
+          <div style={{marginTop:8,padding:'8px 12px',background:'#ffab0011',border:'1px solid #ffab0022',borderRadius:8,fontSize:11,color:'#ffab00'}}>
+            Diferenca de {diferenca}% entre melhor ({melhor.casa}) e pior odd ({pior.casa})
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div style={{display:'flex',flexDirection:'column',gap:20}}>
       <GlassCard>
-        <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>Comparador de Odds</div>
-        <div style={{color:'#8892a4',fontSize:12,marginBottom:20}}>Compare odds de diferentes casas e descubra onde tem mais valor.</div>
+        <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>Comparador de Odds em Tempo Real</div>
+        <div style={{color:'#8892a4',fontSize:12,marginBottom:18}}>Busca odds reais de 250+ casas via odds-api.io. Encontra onde tem mais valor.</div>
 
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+        <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:10,alignItems:'end',marginBottom:16}}>
           <div>
-            <label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>EVENTO</label>
-            <input value={evento} onChange={e=>setEvento(e.target.value)} placeholder="Ex: Flamengo x Palmeiras" style={inp}/>
+            <label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>BUSCAR PARTIDA</label>
+            <input
+              value={busca}
+              onChange={e=>setBusca(e.target.value)}
+              onKeyDown={e=>e.key==='Enter'&&buscarEventos()}
+              placeholder="Ex: Flamengo, Manchester City, Real Madrid..."
+              style={inp}
+            />
           </div>
-          <div>
-            <label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>MERCADO</label>
-            <select value={mercado} onChange={e=>setMercado(e.target.value)} style={inp}>
-              {MERCADOS.map(m=><option key={m}>{m}</option>)}
-            </select>
-          </div>
-          <div style={{gridColumn:'1 / span 2'}}>
-            <label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>SELECAO</label>
-            <input value={selecao} onChange={e=>setSelecao(e.target.value)} placeholder="Ex: Flamengo vence, Over 2.5..." style={inp}/>
-          </div>
+          <button onClick={buscarEventos} disabled={loadingEventos} style={{background:'linear-gradient(135deg,#3d5afe,#651fff)',border:'none',color:'#fff',borderRadius:8,padding:'10px 22px',cursor:'pointer',fontWeight:700,fontSize:13,boxShadow:'0 4px 14px #3d5afe33',whiteSpace:'nowrap'}}>
+            {loadingEventos ? 'Buscando...' : 'Buscar'}
+          </button>
         </div>
 
-        <div style={{fontWeight:700,fontSize:13,marginBottom:10,color:'#8892a4'}}>ODDS POR CASA</div>
-        <div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {linhas.map((l,i)=>(
-            <div key={i} style={{display:'grid',gridTemplateColumns:'1fr 140px auto',gap:10,alignItems:'center'}}>
-              <select value={l.casa} onChange={e=>updateLinha(i,'casa',e.target.value)} style={{...inp,fontSize:13}}>
-                <option value="">Casa de aposta...</option>
-                {CASAS.map(c=><option key={c}>{c}</option>)}
-              </select>
-              <input type="number" step="0.01" min="1.01" value={l.odd} onChange={e=>updateLinha(i,'odd',e.target.value)} placeholder="Odd" style={{...inp,fontSize:15,fontWeight:700,textAlign:'center'}}/>
-              <button onClick={()=>removeLinha(i)} style={{background:'#2a1020',border:'1px solid #ff174433',color:'#ff5252',borderRadius:8,width:36,height:36,cursor:'pointer',fontSize:16,flexShrink:0}}>x</button>
+        {erroMsg && <div style={{color:'#ff7070',fontSize:12,marginBottom:10,padding:'8px 12px',background:'#ff174411',borderRadius:8}}>{erroMsg}</div>}
+
+        {eventos.length > 0 && !eventoSel && (
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            <div style={{fontSize:11,color:'#8892a4',fontWeight:700,marginBottom:4}}>SELECIONE O JOGO</div>
+            {eventos.map(ev => (
+              <button key={ev.id} onClick={()=>buscarOdds(ev)}
+                style={{background:'#0f1320',border:'1px solid #1e2538',borderRadius:10,padding:'12px 16px',cursor:'pointer',textAlign:'left',display:'flex',justifyContent:'space-between',alignItems:'center',color:'#e8eaf6'}}
+                onMouseEnter={e=>e.currentTarget.style.borderColor='#3d5afe'}
+                onMouseLeave={e=>e.currentTarget.style.borderColor='#1e2538'}>
+                <div>
+                  <div style={{fontSize:13,fontWeight:700}}>{ev.home} x {ev.away}</div>
+                  <div style={{fontSize:11,color:'#8892a4',marginTop:2}}>{ev.league || ev.sport} · {ev.date ? new Date(ev.date).toLocaleDateString('pt-BR') : ''}</div>
+                </div>
+                <span style={{fontSize:11,color:'#3d5afe',fontWeight:700}}>Ver odds</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {eventoSel && (
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:'#1a2040',border:'1px solid #3d5afe44',borderRadius:10}}>
+            <div>
+              <div style={{fontSize:14,fontWeight:700,color:'#7c8cff'}}>{eventoSel.home} x {eventoSel.away}</div>
+              <div style={{fontSize:11,color:'#8892a4'}}>{eventoSel.league}</div>
             </div>
-          ))}
-        </div>
-        <button onClick={addLinha} style={{marginTop:10,background:'transparent',border:'1px dashed #2a3048',color:'#8892a4',borderRadius:8,padding:'8px',width:'100%',cursor:'pointer',fontSize:12,fontWeight:600}}>+ Adicionar casa</button>
+            <button onClick={()=>{setEventoSel(null);setOddsData(null);setEventos([])}} style={{background:'transparent',border:'none',color:'#8892a4',cursor:'pointer',fontSize:12}}>Trocar</button>
+          </div>
+        )}
       </GlassCard>
 
-      {analise && (
+      {loadingOdds && (
+        <div style={{textAlign:'center',padding:40,color:'#8892a4'}}>
+          <div style={{fontSize:13,marginTop:10}}>Buscando odds em tempo real...</div>
+        </div>
+      )}
+
+      {oddsData && analise && (
         <>
-          {/* Resultado visual */}
-          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12}}>
-            <GlassCard glow="#00e676" style={{textAlign:'center'}}>
-              <div style={{fontSize:10,color:'#8892a4',fontWeight:700,letterSpacing:1,marginBottom:8}}>MELHOR ODD</div>
-              <div style={{fontSize:36,fontWeight:900,color:'#00e676',fontFamily:"'Bebas Neue',cursive"}}>{analise.melhor.odd}</div>
-              <div style={{fontSize:13,color:'#00e676',fontWeight:700}}>{analise.melhor.casa}</div>
-              <div style={{fontSize:11,color:'#8892a4',marginTop:4}}>Prob. implicita: {(100/analise.melhor.odd).toFixed(1)}%</div>
-            </GlassCard>
-            <GlassCard style={{textAlign:'center'}}>
-              <div style={{fontSize:10,color:'#8892a4',fontWeight:700,letterSpacing:1,marginBottom:8}}>ODD MEDIA</div>
-              <div style={{fontSize:36,fontWeight:900,color:'#7c8cff',fontFamily:"'Bebas Neue',cursive"}}>{analise.media}</div>
-              <div style={{fontSize:11,color:'#8892a4',marginTop:4}}>Prob. media: {analise.probMedia}%</div>
-            </GlassCard>
-            <GlassCard glow="#ffab00" style={{textAlign:'center'}}>
-              <div style={{fontSize:10,color:'#8892a4',fontWeight:700,letterSpacing:1,marginBottom:8}}>DIFERENCA</div>
-              <div style={{fontSize:36,fontWeight:900,color:'#ffab00',fontFamily:"'Bebas Neue',cursive"}}>{analise.diferenca}%</div>
-              <div style={{fontSize:11,color:'#8892a4',marginTop:4}}>entre melhor e pior</div>
-            </GlassCard>
-          </div>
-
-          {/* Tabela de comparacao */}
           <GlassCard>
-            <div style={{fontWeight:700,fontSize:15,marginBottom:16}}>Comparativo Detalhado</div>
-            {evento && <div style={{fontSize:13,color:'#7c8cff',marginBottom:4,fontWeight:600}}>{evento}{selecao?' — '+selecao:''}</div>}
-            {mercado && <div style={{fontSize:11,color:'#8892a4',marginBottom:16}}>{mercado}</div>}
-            <div style={{display:'flex',flexDirection:'column',gap:8}}>
-              {[...analise.odds].sort((a,b)=>b.odd-a.odd).map((l,i)=>{
-                const isMelhor = l.casa===analise.melhor.casa
-                const diff = +(((l.odd-analise.pior.odd)/analise.pior.odd)*100).toFixed(1)
-                const probImpl = (100/l.odd).toFixed(1)
-                const ev = ((l.odd * (analise.probMedia/100)) - 1)
-                return (
-                  <div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'14px 16px',background:isMelhor?'#00e67609':'#0f1320',border:`1px solid ${isMelhor?'#00e67633':'#1e2538'}`,borderRadius:12}}>
-                    {isMelhor && <div style={{width:4,height:40,background:'#00e676',borderRadius:2,flexShrink:0}}/>}
-                    <div style={{flex:1}}>
-                      <div style={{fontSize:14,fontWeight:700,color:isMelhor?'#00e676':'#e8eaf6'}}>{l.casa}</div>
-                      <div style={{fontSize:11,color:'#8892a4',marginTop:2}}>Prob. implicita: {probImpl}%</div>
-                    </div>
-                    <div style={{textAlign:'center',minWidth:60}}>
-                      <div style={{fontSize:22,fontWeight:900,color:isMelhor?'#00e676':'#e8eaf6',fontFamily:"'Bebas Neue',cursive"}}>{l.odd}</div>
-                    </div>
-                    <div style={{textAlign:'right',minWidth:80}}>
-                      <div style={{fontSize:12,fontWeight:700,color:ev>0?'#00e676':ev>-0.05?'#ffab00':'#ff5252'}}>EV: {ev>0?'+':''}{(ev*100).toFixed(1)}%</div>
-                      {i>0&&<div style={{fontSize:11,color:'#8892a4'}}>-{diff}% vs melhor</div>}
-                      {i===0&&<div style={{fontSize:11,color:'#00e676',fontWeight:700}}>MELHOR VALOR</div>}
-                    </div>
-                  </div>
-                )
-              })}
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16,flexWrap:'wrap',gap:10}}>
+              <div style={{fontWeight:700,fontSize:15}}>Odds em Tempo Real</div>
+              <select value={mercadoSel} onChange={e=>setMercadoSel(e.target.value)} style={{...inp,width:'auto',fontSize:12}}>
+                {MERCADOS_API.map(m=><option key={m.key} value={m.key}>{m.label}</option>)}
+              </select>
             </div>
-            <div style={{marginTop:16,padding:'12px 16px',background:'#7c8cff11',border:'1px solid #7c8cff22',borderRadius:10}}>
-              <div style={{fontSize:12,color:'#a0aec0'}}>
-                <strong style={{color:'#7c8cff'}}>EV (Expected Value)</strong>: valor esperado por aposta. EV positivo indica aposta com valor estatistico. Calculado com base na probabilidade media de todas as casas.
-              </div>
-            </div>
+            <div style={{fontSize:12,color:'#8892a4',marginBottom:16}}>{analise.mercado} · {Object.keys(oddsData.bookmakers||{}).length} casas encontradas</div>
+            {Object.entries(analise.grupos).map(([label, items]) => renderGrupo(label, items))}
           </GlassCard>
 
-          {/* Recomendacao */}
-          <GlassCard glow={analise.evMelhor>0?'#00e676':'#ffab00'}>
-            <div style={{fontWeight:700,fontSize:14,marginBottom:8}}>Recomendacao</div>
-            {analise.evMelhor > 0
-              ? <div style={{fontSize:13,color:'#00e676',lineHeight:1.6}}>
-                  Apostar na <strong>{analise.melhor.casa}</strong> oferece a melhor odd ({analise.melhor.odd}) com EV positivo de {(analise.evMelhor*100).toFixed(1)}%. Ha valor nesta aposta comparado a media do mercado.
-                </div>
-              : <div style={{fontSize:13,color:'#ffab00',lineHeight:1.6}}>
-                  Nenhuma casa apresenta EV positivo neste mercado. O mercado esta com odds baixas — considere aguardar movimento ou buscar outro mercado.
-                </div>}
-          </GlassCard>
+          <div style={{padding:'12px 16px',background:'#7c8cff11',border:'1px solid #7c8cff22',borderRadius:12}}>
+            <div style={{fontSize:12,color:'#a0aec0'}}>
+              <strong style={{color:'#7c8cff'}}>EV (Expected Value)</strong>: EV positivo indica que a odd esta acima da probabilidade media do mercado — aposta com valor estatistico. Dados em tempo real via odds-api.io.
+            </div>
+          </div>
         </>
+      )}
+
+      {oddsData && !analise && !loadingOdds && (
+        <GlassCard>
+          <div style={{color:'#ffab00',fontSize:13,textAlign:'center',padding:20}}>Odds disponiveis mas sem dados suficientes para o mercado selecionado. Tente outro mercado.</div>
+        </GlassCard>
       )}
     </div>
   )
