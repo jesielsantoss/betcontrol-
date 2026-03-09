@@ -1262,7 +1262,22 @@ function ApostasTab({ bets, userId, onRefresh }) {
             else if (sel.includes('ambas')) novoStatus = hScore>0 && aScore>0 ? 'ganhou' : 'perdeu'
             else if (sel.includes(home?.team?.displayName?.toLowerCase()||'casa')) novoStatus = hScore>aScore?'ganhou':'perdeu'
             else if (sel.includes(away?.team?.displayName?.toLowerCase()||'fora')) novoStatus = aScore>hScore?'ganhou':'perdeu'
-            if (novoStatus) { await updateStatus(bet.id, novoStatus); atualizadas++; break }
+            if (novoStatus) {
+              const placar = `${home?.team?.shortDisplayName||'Casa'} ${hScore}-${aScore} ${away?.team?.shortDisplayName||'Fora'}`
+              const obsBase = (bet.observacao||'').replace(/\s*\|?\s*Resultado:[^|]*/g,'').trim()
+              const novaObs = (obsBase ? obsBase + ' | ' : '') + `Resultado: ${placar}`
+              // Optimistic local update com placar
+              setLocalBets(prev => prev.map(b => b.id===bet.id
+                ? {...b, status:novoStatus, retorno:novoStatus==='ganhou'?+(bet.odd*bet.valor).toFixed(2):0, observacao:novaObs}
+                : b))
+              // Persiste no Supabase
+              await supabase.from('apostas').update({
+                status: novoStatus,
+                retorno: novoStatus==='ganhou' ? +(bet.odd*bet.valor).toFixed(2) : 0,
+                observacao: novaObs
+              }).eq('id', bet.id)
+              atualizadas++; break
+            }
           }
         }
       } catch(e) {}
@@ -1301,7 +1316,16 @@ function ApostasTab({ bets, userId, onRefresh }) {
             {filtered.map((bet,i)=>(
               <tr key={bet.id} style={{borderBottom:'1px solid #1a2030',background:i%2===0?'transparent':'#0a0d18'}}>
                 <td style={{padding:'12px 14px',fontSize:12,color:'#8892a4'}}>{bet.data}</td>
-                <td style={{padding:'12px 14px',fontSize:13,fontWeight:600}}>{bet.evento}<div style={{fontSize:11,color:'#7c8cff'}}>{bet.selecao}</div>{bet.mercado&&<div style={{fontSize:10,color:'#8892a4'}}>{bet.mercado}</div>}</td>
+                <td style={{padding:'12px 14px',fontSize:13,fontWeight:600}}>
+                  {bet.evento}
+                  <div style={{fontSize:11,color:'#7c8cff'}}>{bet.selecao}</div>
+                  {bet.mercado&&<div style={{fontSize:10,color:'#8892a4'}}>{bet.mercado}</div>}
+                  {bet.observacao?.includes('Resultado:')&&(
+                    <div style={{fontSize:11,fontWeight:700,marginTop:3,color:bet.status==='ganhou'?'#00e676':'#ff5252',background:bet.status==='ganhou'?'#00e67611':'#ff174411',border:`1px solid ${bet.status==='ganhou'?'#00e67633':'#ff174433'}`,borderRadius:5,padding:'1px 7px',display:'inline-block'}}>
+                      ⚽ {bet.observacao.match(/Resultado: ([^|]+)/)?.[1]?.trim()}
+                    </div>
+                  )}
+                </td>
                 <td style={{padding:'12px 14px',fontSize:12,color:'#a0aec0'}}>{bet.esporte||'-'}</td>
                 <td style={{padding:'12px 14px',fontSize:12,color:'#a0aec0'}}>{bet.casa||'-'}</td>
                 <td style={{padding:'12px 14px',fontSize:13,fontWeight:700,color:'#ffab00'}}>{Number(bet.odd).toFixed(2)}</td>
