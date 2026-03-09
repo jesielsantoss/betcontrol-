@@ -889,7 +889,7 @@ function SugestoesTab() {
                         <div style={{background:`linear-gradient(90deg,${bet.cor}88,${bet.cor})`,borderRadius:4,height:4,width:`${bet.prob}%`,boxShadow:`0 0 6px ${bet.cor}55`}}/>
                       </div>
                       <div style={{fontSize:10,color:'#8892a4',marginBottom:6}}>{bet.motivo}</div>
-                      <div style={{fontSize:10,color:'#a0aec0',padding:'4px 8px',background:'#1a2040',borderRadius:6'}}>
+                      <div style={{fontSize:10,color:'#a0aec0',padding:'4px 8px',background:'#1a2040',borderRadius:6}}>
                         Se a casa pagar <strong style={{color:'#00e676'}}>{'>'}{bet.fairOdd}</strong> → <strong style={{color:'#00e676'}}>Value Bet!</strong>
                       </div>
                     </div>
