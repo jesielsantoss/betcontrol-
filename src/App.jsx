@@ -80,6 +80,242 @@ function exportCSV(bets) {
   const a = document.createElement('a'); a.href=url; a.download=`betcontrol_${new Date().toISOString().slice(0,10)}.csv`; a.click(); URL.revokeObjectURL(url)
 }
 
+// ===================== SUGESTOES TAB =====================
+function SugestoesTab() {
+  const [liga, setLiga] = useState(LIGAS_ESPN[0])
+  const [loading, setLoading] = useState(false)
+  const [sugestoes, setSugestoes] = useState([])
+  const [searched, setSearched] = useState(false)
+
+  async function buscarSugestoes() {
+    setLoading(true); setSearched(true); setSugestoes([])
+    try {
+      // busca proximos 7 dias
+      const hoje = new Date()
+      const todos = []
+      for (let i = 0; i <= 6; i++) {
+        const d = new Date(hoje)
+        d.setDate(d.getDate() + i)
+        const date = d.toISOString().slice(0,10)
+        const events = await fetchESPN(liga.id, date)
+        events.forEach(e => { if (!e.status?.type?.completed) todos.push({...e, _date: date}) })
+      }
+
+      const cards = []
+      for (const event of todos.slice(0, 20)) {
+        const comps = event.competitions?.[0]
+        const home = comps?.competitors?.find(c=>c.homeAway==='home')
+        const away = comps?.competitors?.find(c=>c.homeAway==='away')
+        if (!home || !away) continue
+
+        const parseRecord = (rec) => {
+          if (!rec) return {w:0,d:0,l:0,total:1,gf:0,ga:0}
+          const parts = rec.split('-').map(Number)
+          return {w:parts[0]||0,d:parts[1]||0,l:parts[2]||0,total:Math.max(1,(parts[0]||0)+(parts[1]||0)+(parts[2]||0))}
+        }
+
+        const hr = parseRecord(home?.records?.[0]?.summary)
+        const ar = parseRecord(away?.records?.[0]?.summary)
+
+        const homeAttack = (hr.w + hr.d*0.5) / hr.total
+        const awayAttack = (ar.w + ar.d*0.5) / ar.total
+        const homeDefense = hr.l / hr.total
+        const awayDefense = ar.l / ar.total
+
+        const expGoals = homeAttack * 1.4 + awayAttack * 1.2
+        const over25prob = Math.min(88, Math.round(expGoals * 28 + 15))
+        const over15prob = Math.min(95, Math.round(over25prob + 14))
+        const bttsProb = Math.min(85, Math.round(homeAttack * awayAttack * 110 + 18))
+        const homeWinProb = Math.min(85, Math.round(homeAttack * 55 + awayDefense * 20 + 8))
+        const awayWinProb = Math.min(80, Math.round(awayAttack * 50 + homeDefense * 18 + 5))
+        const drawProb = Math.max(8, Math.min(38, 100 - homeWinProb - awayWinProb))
+
+        const hora = new Date(event.date).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})
+        const dataFormatada = new Date(event._date+'T12:00:00').toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit'})
+
+        // gerar sugestoes de valor
+        const bets = []
+
+        if (over25prob >= 58) bets.push({
+          tipo: 'Over 2.5 Gols',
+          prob: over25prob,
+          oddSugerida: +(100/over25prob * 0.92).toFixed(2),
+          cor: '#00e676',
+          icone: 'GOL',
+          motivo: `Media de gols e ataque forte dos dois times`
+        })
+
+        if (bttsProb >= 60) bets.push({
+          tipo: 'Ambas Marcam',
+          prob: bttsProb,
+          oddSugerida: +(100/bttsProb * 0.92).toFixed(2),
+          cor: '#7c8cff',
+          icone: 'BTTS',
+          motivo: `Os dois times tem bom poder ofensivo`
+        })
+
+        if (homeWinProb >= 62) bets.push({
+          tipo: `Vitoria ${home.team?.displayName}`,
+          prob: homeWinProb,
+          oddSugerida: +(100/homeWinProb * 0.93).toFixed(2),
+          cor: '#ffab00',
+          icone: 'CASA',
+          motivo: `Mandante com ${Math.round(hr.w/hr.total*100)}% de aproveitamento`
+        })
+
+        if (awayWinProb >= 58) bets.push({
+          tipo: `Vitoria ${away.team?.displayName}`,
+          prob: awayWinProb,
+          oddSugerida: +(100/awayWinProb * 0.93).toFixed(2),
+          cor: '#e040fb',
+          icone: 'FORA',
+          motivo: `Visitante com bom aproveitamento fora`
+        })
+
+        if (over15prob >= 80) bets.push({
+          tipo: 'Over 1.5 Gols',
+          prob: over15prob,
+          oddSugerida: +(100/over15prob * 0.92).toFixed(2),
+          cor: '#00bcd4',
+          icone: 'GOL',
+          motivo: `Alta probabilidade de pelo menos 2 gols`
+        })
+
+        if (bets.length === 0) continue
+
+        // pegar melhor sugestao
+        const melhor = bets.sort((a,b)=>b.prob-a.prob)[0]
+        const confianca = melhor.prob >= 70 ? 'Alta' : melhor.prob >= 60 ? 'Media' : 'Baixa'
+        const confCor = melhor.prob >= 70 ? '#00e676' : melhor.prob >= 60 ? '#ffab00' : '#ff5252'
+
+        cards.push({
+          id: event.id,
+          homeName: home.team?.displayName,
+          awayName: away.team?.displayName,
+          homeLogo: home.team?.logo,
+          awayLogo: away.team?.logo,
+          homeRecord: home?.records?.[0]?.summary,
+          awayRecord: away?.records?.[0]?.summary,
+          data: dataFormatada,
+          hora,
+          bets: bets.sort((a,b)=>b.prob-a.prob).slice(0,3),
+          melhor,
+          confianca,
+          confCor,
+          over25prob,
+          bttsProb,
+          homeWinProb,
+          awayWinProb,
+        })
+      }
+
+      setSugestoes(cards.sort((a,b)=>b.melhor.prob-a.melhor.prob))
+    } catch(e) { console.error(e) }
+    setLoading(false)
+  }
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:20}}>
+      <div style={{background:'#111724',border:'1px solid #1e2538',borderRadius:16,padding:'20px 24px'}}>
+        <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>Sugestoes de Apostas</div>
+        <div style={{color:'#8892a4',fontSize:12,marginBottom:16}}>Analisa os proximos 7 dias e sugere apostas com maior probabilidade baseado nas estatisticas dos times.</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:10,alignItems:'end'}}>
+          <div>
+            <label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>COMPETICAO</label>
+            <select value={liga.id} onChange={e=>setLiga(LIGAS_ESPN.find(l=>l.id===e.target.value))} style={inp}>
+              {LIGAS_ESPN.map(l=><option key={l.id} value={l.id}>{l.nome}</option>)}
+            </select>
+          </div>
+          <button onClick={buscarSugestoes} disabled={loading} style={{background:'linear-gradient(135deg,#3d5afe,#651fff)',border:'none',color:'#fff',borderRadius:8,padding:'10px 22px',cursor:'pointer',fontWeight:700,fontSize:14,whiteSpace:'nowrap'}}>
+            {loading?'Analisando...':'Analisar Jogos'}
+          </button>
+        </div>
+        {loading&&(
+          <div style={{textAlign:'center',padding:40,color:'#8892a4'}}>
+            <div style={{fontSize:24,marginBottom:10}}>...</div>
+            <div style={{fontSize:13}}>Buscando e analisando partidas dos proximos 7 dias...</div>
+          </div>
+        )}
+      </div>
+
+      {searched&&!loading&&sugestoes.length===0&&(
+        <div style={{textAlign:'center',color:'#8892a4',padding:40,background:'#111724',borderRadius:16,border:'1px solid #1e2538'}}>
+          Nenhuma partida encontrada para os proximos 7 dias nesta competicao.
+        </div>
+      )}
+
+      {sugestoes.length>0&&(
+        <>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10}}>
+            {[['Alta',sugestoes.filter(s=>s.confianca==='Alta').length,'#00e676'],
+              ['Media',sugestoes.filter(s=>s.confianca==='Media').length,'#ffab00'],
+              ['Baixa',sugestoes.filter(s=>s.confianca==='Baixa').length,'#ff5252']].map(([lbl,val,cor])=>(
+              <div key={lbl} style={{background:'#111724',border:`1px solid ${cor}33`,borderRadius:12,padding:'14px 18px',textAlign:'center'}}>
+                <div style={{fontSize:10,color:'#8892a4',fontWeight:700,letterSpacing:1,marginBottom:6}}>CONFIANCA {lbl.toUpperCase()}</div>
+                <div style={{fontSize:28,fontWeight:900,color:cor,fontFamily:"'Bebas Neue',cursive"}}>{val}</div>
+                <div style={{fontSize:11,color:'#8892a4'}}>sugestoes</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{display:'flex',flexDirection:'column',gap:14}}>
+            {sugestoes.map(s=>(
+              <div key={s.id} style={{background:'#111724',border:`1px solid ${s.confCor}33`,borderRadius:16,padding:'18px 22px'}}>
+                {/* Header do jogo */}
+                <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
+                  <img src={s.homeLogo} style={{width:32,height:32,objectFit:'contain',flexShrink:0}} alt="" onError={e=>e.target.style.display='none'}/>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:14,fontWeight:800}}>{s.homeName} <span style={{color:'#8892a4',fontWeight:400}}>x</span> {s.awayName}</div>
+                    <div style={{fontSize:11,color:'#8892a4',marginTop:2}}>{s.data} - {s.hora} &nbsp;|&nbsp; {s.homeRecord||'--'} vs {s.awayRecord||'--'}</div>
+                  </div>
+                  <img src={s.awayLogo} style={{width:32,height:32,objectFit:'contain',flexShrink:0}} alt="" onError={e=>e.target.style.display='none'}/>
+                  <div style={{background:s.confCor+'22',border:`1px solid ${s.confCor}44`,borderRadius:8,padding:'4px 10px',textAlign:'center',flexShrink:0}}>
+                    <div style={{fontSize:9,color:s.confCor,fontWeight:700,letterSpacing:1}}>CONFIANCA</div>
+                    <div style={{fontSize:13,color:s.confCor,fontWeight:800}}>{s.confianca}</div>
+                  </div>
+                </div>
+
+                {/* Sugestoes */}
+                <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+                  {s.bets.map((bet,i)=>(
+                    <div key={i} style={{background:'#0f1320',border:`1px solid ${bet.cor}33`,borderRadius:12,padding:'12px 16px',flex:1,minWidth:180}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                        <span style={{background:bet.cor+'22',color:bet.cor,borderRadius:5,padding:'2px 7px',fontSize:9,fontWeight:800,letterSpacing:1}}>{bet.icone}</span>
+                        <span style={{fontSize:13,fontWeight:700,color:'#e8eaf6'}}>{bet.tipo}</span>
+                      </div>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
+                        <div>
+                          <div style={{fontSize:10,color:'#8892a4',marginBottom:2}}>PROBABILIDADE</div>
+                          <div style={{fontSize:22,fontWeight:900,color:bet.cor,fontFamily:"'Bebas Neue',cursive"}}>{bet.prob}%</div>
+                        </div>
+                        <div style={{textAlign:'right'}}>
+                          <div style={{fontSize:10,color:'#8892a4',marginBottom:2}}>ODD MINIMA</div>
+                          <div style={{fontSize:18,fontWeight:800,color:'#ffab00',fontFamily:"'Bebas Neue',cursive"}}>{bet.oddSugerida}</div>
+                        </div>
+                      </div>
+                      <div style={{marginTop:8}}>
+                        <div style={{background:'#1e2538',borderRadius:4,height:5}}>
+                          <div style={{background:bet.cor,borderRadius:4,height:5,width:`${bet.prob}%`}}/>
+                        </div>
+                      </div>
+                      <div style={{fontSize:10,color:'#8892a4',marginTop:6}}>{bet.motivo}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{background:'#ff174411',border:'1px solid #ff174433',borderRadius:12,padding:'14px 18px'}}>
+            <div style={{fontSize:12,color:'#ff7070',fontWeight:700,marginBottom:4}}>Aviso importante</div>
+            <div style={{fontSize:12,color:'#a0aec0'}}>As sugestoes sao baseadas em estatisticas historicas dos times e probabilidades matematicas. Nao garantem resultado. Use como ferramenta de apoio, nunca como certeza. Aposte com responsabilidade.</div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ===================== SCOUTS TAB (ESPN) =====================
 function ScoutsTab() {
   const [liga, setLiga] = useState(LIGAS_ESPN[0])
@@ -789,7 +1025,7 @@ function BetApp({ user }) {
   const fetchBets = useCallback(async()=>{ const {data}=await supabase.from('apostas').select('*').eq('user_id',user.id).order('data',{ascending:false}); setBets(data||[]); setLoading(false) },[user.id])
   useEffect(()=>{fetchBets()},[fetchBets])
   const stats = useMemo(()=>{ const won=bets.filter(b=>b.status==='ganhou'),lost=bets.filter(b=>b.status==='perdeu'); const fin=won.length+lost.length; const invested=bets.reduce((s,b)=>s+Number(b.valor),0); const returned=won.reduce((s,b)=>s+(b.retorno||0),0); const profit=returned-won.reduce((s,b)=>s+Number(b.valor),0)-lost.reduce((s,b)=>s+Number(b.valor),0); const roi=invested>0?((returned-invested)/invested*100).toFixed(1):'0.0'; const winrate=fin>0?((won.length/fin)*100).toFixed(0):'0'; return {total:bets.length,won:won.length,lost:lost.length,pending:bets.filter(b=>b.status==='pendente').length,invested,profit,roi,winrate} },[bets])
-  const TABS=[['apostas','Apostas'],['analytics','Analytics'],['inteligencia','Inteligencia'],['scouts','Scouts'],['bankroll','Bankroll']]
+  const TABS=[['apostas','Apostas'],['analytics','Analytics'],['inteligencia','Inteligencia'],['sugestoes','Sugestoes'],['scouts','Scouts'],['bankroll','Bankroll']]
   return (
     <div style={{minHeight:'100vh',background:'#0b0e1a',color:'#e8eaf6',fontFamily:"'DM Sans',sans-serif"}}>
       <div style={{background:'#0f1320',borderBottom:'1px solid #1e2538',padding:'14px 20px',display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,zIndex:100}}>
@@ -818,6 +1054,7 @@ function BetApp({ user }) {
           :tab==='apostas'?<ApostasTab bets={bets} userId={user.id} onRefresh={fetchBets}/>
           :tab==='analytics'?<Analytics bets={bets}/>
           :tab==='inteligencia'?<InteligenciaTab bets={bets}/>
+          :tab==='sugestoes'?<SugestoesTab/>
           :tab==='scouts'?<ScoutsTab/>
           :<Bankroll bets={bets} userId={user.id}/>}
       </div>
