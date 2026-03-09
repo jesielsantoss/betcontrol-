@@ -9,8 +9,8 @@ const ESPORTES = ['Futebol','Basquete','Tennis','Volei','MMA/UFC','E-Sports','Ou
 const CASAS = ['Bet365','Sportingbet','Betano','KTO','Novibet','Blaze','Vaidebet','Outra']
 const CHART_COLORS = ['#7c8cff','#00e676','#ffab00','#ff1744','#00bcd4','#e040fb']
 const inp = { background:'#0f1320',border:'1px solid #2a3048',borderRadius:8,color:'#e8eaf6',padding:'9px 12px',fontSize:14,outline:'none',width:'100%',fontFamily:'inherit' }
-const API_KEY = '86d9281a82cf1b2bd8ad1afc6f5a6edc'
-const API_URL = 'https://v3.football.api-sports.io'
+// API via proxy Vercel
+const API_URL = '/api/football?path='
 
 const LIGAS = [
   { id: 71,  nome: 'Brasileirao Serie A', season: 2025 },
@@ -26,7 +26,7 @@ const LIGAS = [
 ]
 
 async function apiGet(path) {
-  const res = await fetch(`${API_URL}${path}`, { headers: { 'x-apisports-key': API_KEY } })
+  const res = await fetch(`${API_URL}${encodeURIComponent(path)}`)
   const data = await res.json()
   return data.response || []
 }
