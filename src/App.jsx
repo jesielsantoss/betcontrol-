@@ -52,6 +52,45 @@ function BetForm({ editData, userId, onSave, onClose }) {
     setSaving(false); onSave()
   }
 
+  const s = (k) => ({ value: form[k], onChange: e => setForm(f=>({...f,[k]:e.target.value})) })
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'#000000cc',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999,backdropFilter:'blur(4px)',padding:16}}>
+      <div style={{background:'#141928',border:'1px solid #2a3048',borderRadius:18,padding:28,width:'100%',maxWidth:500,maxHeight:'90vh',overflowY:'auto'}}>
+        <div style={{fontSize:17,fontWeight:800,marginBottom:22}}>{editData?.id?'✏️ Editar Aposta':'🎯 Nova Aposta'}</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:13}}>
+          <div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>DATA</label><input type="date" {...s('data')} style={inp} /></div>
+          <div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>STATUS</label><select {...s('status')} style={inp}><option>pendente</option><option>ganhou</option><option>perdeu</option></select></div>
+          <div style={{gridColumn:'1 / span 2'}}><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>EVENTO / JOGO</label><input type="text" {...s('evento')} style={inp} /></div>
+          <div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>ESPORTE</label><select {...s('esporte')} style={inp}>{ESPORTES.map(o=><option key={o}>{o}</option>)}</select></div>
+          <div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>CASA DE APOSTAS</label><select {...s('casa')} style={inp}>{CASAS.map(o=><option key={o}>{o}</option>)}</select></div>
+          <div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>TIPO</label><select {...s('tipo')} style={inp}><option>simples</option><option>múltipla</option><option>ao vivo</option></select></div>
+          <div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>MERCADO</label><input type="text" {...s('mercado')} style={inp} /></div>
+          <div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>SELEÇÃO</label><input type="text" {...s('selecao')} style={inp} /></div>
+          <div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>ODD</label><input type="number" step="0.01" {...s('odd')} style={inp} /></div>
+          <div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>VALOR (R$)</label><input type="number" step="0.01" {...s('valor')} style={inp} /></div>
+          <div style={{gridColumn:'1 / span 2'}}><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>OBSERVAÇÃO</label><input type="text" {...s('observacao')} style={inp} /></div>
+        </div>
+        <div style={{display:'flex',gap:10,marginTop:22}}>
+          <button onClick={onClose} style={{flex:1,background:'transparent',border:'1px solid #2a3048',color:'#8892a4',borderRadius:10,padding:12,cursor:'pointer',fontWeight:600}}>Cancelar</button>
+          <button onClick={handleSave} disabled={saving} style={{flex:2,background:saving?'#1e2538':'linear-gradient(135deg,#00c853,#00897b)',border:'none',color:'#fff',borderRadius:10,padding:12,cursor:'pointer',fontWeight:700,fontSize:15}}>{saving?'Salvando...':'Salvar'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+  async function handleSave() {
+    if (!form.evento||!form.odd||!form.valor) return
+    setSaving(true)
+    const odd=parseFloat(form.odd),valor=parseFloat(form.valor)
+    const retorno=form.status==='ganhou'?+(odd*valor).toFixed(2):form.status==='perdeu'?0:null
+    const payload={...form,odd,valor,retorno,user_id:userId}
+    if (editData?.id) await supabase.from('apostas').update(payload).eq('id',editData.id)
+    else await supabase.from('apostas').insert(payload)
+    setSaving(false); onSave()
+  }
+
   const F = ({k,label,type='text',full,opts}) => (
     <div style={{gridColumn:full?'1 / span 2':'auto'}}>
       <label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>{label}</label>
