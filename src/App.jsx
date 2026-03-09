@@ -241,217 +241,221 @@ function ComparadorTab() {
   const [eventoSel, setEventoSel] = useState(null)
   const [oddsData, setOddsData] = useState(null)
   const [loadingOdds, setLoadingOdds] = useState(false)
-  const [mercadoSel, setMercadoSel] = useState('moneyline')
-  const [erroMsg, setErroMsg] = useState('')
+  const [erro, setErro] = useState('')
+  const [mercadoFiltro, setMercadoFiltro] = useState('')
+  const [testando, setTestando] = useState(false)
+  const [testeResult, setTesteResult] = useState(null)
 
-  const MERCADOS_API = [
-    { key:'moneyline', label:'Resultado Final (1X2)' },
-    { key:'totals', label:'Over/Under Gols' },
-    { key:'btts', label:'Ambas Marcam' },
-    { key:'asian_handicap', label:'Handicap Asiatico' },
-  ]
+  async function testarAPI() {
+    setTestando(true); setTesteResult(null)
+    try {
+      const res = await fetch('/api/odds?endpoint=sports')
+      const data = await res.json()
+      if (data.error) setTesteResult({ ok: false, msg: data.error })
+      else setTesteResult({ ok: true, msg: `API funcionando! ${Array.isArray(data) ? data.length : '?'} esportes disponíveis.` })
+    } catch(e) { setTesteResult({ ok: false, msg: e.message }) }
+    setTestando(false)
+  }
 
   async function buscarEventos() {
     if (!busca.trim()) return
-    setLoadingEventos(true); setErroMsg(''); setEventos([]); setEventoSel(null); setOddsData(null)
+    setLoadingEventos(true); setErro(''); setEventos([]); setEventoSel(null); setOddsData(null)
     try {
-      const res = await fetch(`/api/odds?endpoint=events&sport=football&limit=50`)
+      const res = await fetch(`/api/odds?endpoint=events&sport=football&limit=100`)
       const data = await res.json()
-      if (data.error) { setErroMsg('Erro da API: ' + data.error); setLoadingEventos(false); return }
+      if (data.error) { setErro(data.error); setLoadingEventos(false); return }
       const lista = Array.isArray(data) ? data : (data.events || data.data || [])
-      // filtrar pelo termo buscado no frontend
       const termo = busca.toLowerCase()
       const filtrados = lista.filter(ev =>
         (ev.home||'').toLowerCase().includes(termo) ||
         (ev.away||'').toLowerCase().includes(termo) ||
-        (ev.league||'').toLowerCase().includes(termo) ||
-        (ev.name||'').toLowerCase().includes(termo)
+        (ev.league||'').toLowerCase().includes(termo)
       )
-      setEventos(filtrados)
-      if (filtrados.length === 0) setErroMsg(lista.length === 0 ? 'API nao retornou eventos. Verifique se ODDS_API_KEY esta configurada no Vercel.' : `Nenhum jogo encontrado com "${busca}". Tente: "Manchester", "Real Madrid", "Flamengo"...`)
-    } catch(e) { setErroMsg('Erro de conexao: ' + e.message) }
+      setEventos(filtrados.slice(0, 15))
+      if (lista.length === 0) setErro('API retornou lista vazia. Verifique se ODDS_API_KEY está no Vercel.')
+      else if (filtrados.length === 0) setErro(`Nenhum jogo encontrado com "${busca}". Tente: Manchester, Real Madrid, Barcelona...`)
+    } catch(e) { setErro('Erro: ' + e.message) }
     setLoadingEventos(false)
   }
 
   async function buscarOdds(event) {
-    setEventoSel(event); setLoadingOdds(true); setOddsData(null); setErroMsg('')
+    setEventoSel(event); setLoadingOdds(true); setOddsData(null); setErro('')
     try {
-      const res = await fetch(`/api/odds?endpoint=odds&eventId=${event.id}&bookmakers=Bet365,Betano,Unibet,Bwin,William+Hill,Betway,Pinnacle,1xBet,Betfair`)
+      const res = await fetch(`/api/odds?endpoint=odds&eventId=${event.id}`)
       const data = await res.json()
-      if (data.error) { setErroMsg('Erro ao buscar odds: ' + data.error); setLoadingOdds(false); return }
+      if (data.error) { setErro(data.error); setLoadingOdds(false); return }
       setOddsData(data)
-    } catch(e) { setErroMsg('Erro ao buscar odds.') }
+      // pegar primeiro mercado disponível
+      const bms = data.bookmakers || {}
+      const first = Object.values(bms)[0]
+      const mkArr = Array.isArray(first) ? first : Object.values(first || {})
+      if (mkArr[0]?.name) setMercadoFiltro(mkArr[0].name)
+    } catch(e) { setErro('Erro ao buscar odds: ' + e.message) }
     setLoadingOdds(false)
   }
 
-  const analise = useMemo(() => {
-    if (!oddsData?.bookmakers) return null
-    const bms = oddsData.bookmakers
-
-    // extrair odds do mercado selecionado
-    const linhas = []
-    Object.entries(bms).forEach(([casa, markets]) => {
+  // Processar odds agrupadas por mercado e selecao
+  const mercados = useMemo(() => {
+    if (!oddsData?.bookmakers) return {}
+    const result = {}
+    Object.entries(oddsData.bookmakers).forEach(([casa, markets]) => {
       const mkArr = Array.isArray(markets) ? markets : Object.values(markets)
-      const mk = mkArr.find(m => m.name?.toLowerCase().includes(mercadoSel==='moneyline'?'money':mercadoSel==='totals'?'total':mercadoSel==='btts'?'both':mercadoSel))
-        || mkArr[0]
-      if (!mk) return
-      const odds = mk.odds || mk.outcomes || []
-      odds.forEach(o => {
-        const label = o.label || o.name || o.side || ''
-        const odd = parseFloat(o.price || o.odds || o.odd || 0)
-        if (odd > 1) linhas.push({ casa, label, odd, href: bms[casa]?.href || mk.href || null })
+      mkArr.forEach(mk => {
+        const mkName = mk.name || 'Mercado'
+        if (!result[mkName]) result[mkName] = {}
+        const ods = mk.odds || mk.outcomes || []
+        ods.forEach(o => {
+          const label = o.label || o.name || o.side || 'Selecao'
+          const odd = parseFloat(o.price || o.odds || o.odd || 0)
+          if (odd <= 1) return
+          if (!result[mkName][label]) result[mkName][label] = []
+          result[mkName][label].push({ casa, odd, href: o.href || mk.href || null })
+        })
       })
     })
+    return result
+  }, [oddsData])
 
-    if (linhas.length < 2) return null
-
-    // agrupar por selecao
-    const grupos = {}
-    linhas.forEach(l => {
-      const key = l.label?.toLowerCase()
-      if (!grupos[key]) grupos[key] = []
-      grupos[key].push(l)
-    })
-
-    return { grupos, linhas, mercado: MERCADOS_API.find(m=>m.key===mercadoSel)?.label || mercadoSel }
-  }, [oddsData, mercadoSel])
+  const mercadosNomes = Object.keys(mercados)
+  const mercadoAtivo = mercadoFiltro || mercadosNomes[0] || ''
+  const grupos = mercados[mercadoAtivo] || {}
 
   function renderGrupo(label, items) {
     if (!items || items.length < 2) return null
     const sorted = [...items].sort((a,b) => b.odd - a.odd)
     const melhor = sorted[0]
-    const pior = sorted[sorted.length-1]
     const media = items.reduce((s,i)=>s+i.odd,0)/items.length
     const probMedia = 100/media
-    const diferenca = +(((melhor.odd-pior.odd)/pior.odd)*100).toFixed(1)
-
+    const diferenca = +(((melhor.odd - sorted[sorted.length-1].odd)/sorted[sorted.length-1].odd)*100).toFixed(1)
     return (
-      <div key={label} style={{marginBottom:20}}>
-        <div style={{fontSize:12,fontWeight:700,color:'#8892a4',letterSpacing:1,marginBottom:10,textTransform:'uppercase'}}>{label}</div>
-        <div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {sorted.map((item,i) => {
-            const ev = (item.odd * (probMedia/100)) - 1
+      <div key={label} style={{marginBottom:24}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+          <span style={{fontSize:12,fontWeight:700,color:'#7c8cff',letterSpacing:0.5}}>{label}</span>
+          {diferenca > 0 && <span style={{fontSize:10,color:'#ffab00',background:'#ffab0011',border:'1px solid #ffab0022',borderRadius:5,padding:'2px 8px'}}>Diferenca: {diferenca}%</span>}
+        </div>
+        <div style={{display:'flex',flexDirection:'column',gap:7}}>
+          {sorted.map((item,i)=>{
             const isMelhor = i===0
+            const ev = (item.odd*(probMedia/100))-1
+            const diffVsMelhor = i===0?0:(((melhor.odd-item.odd)/melhor.odd)*100).toFixed(1)
             return (
-              <div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',background:isMelhor?'#00e67608':'#0f1320',border:`1px solid ${isMelhor?'#00e67633':'#1e2538'}`,borderRadius:12,transition:'all 0.15s'}}>
-                {isMelhor && <div style={{width:4,height:36,background:'#00e676',borderRadius:2,flexShrink:0,boxShadow:'0 0 8px #00e67666'}}/>}
+              <div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',background:isMelhor?'#00e67609':'#0f1320',border:`1px solid ${isMelhor?'#00e67644':'#1e2538'}`,borderRadius:11,transition:'all 0.15s'}}>
+                {isMelhor&&<div style={{width:4,height:40,background:'#00e676',borderRadius:2,flexShrink:0,boxShadow:'0 0 10px #00e67677'}}/>}
                 <div style={{flex:1}}>
                   <div style={{fontSize:14,fontWeight:700,color:isMelhor?'#00e676':'#e8eaf6'}}>{item.casa}</div>
                   <div style={{fontSize:10,color:'#8892a4',marginTop:1}}>Prob impl: {(100/item.odd).toFixed(1)}%</div>
                 </div>
-                {item.href && (
-                  <a href={item.href} target="_blank" rel="noreferrer"
-                    style={{fontSize:10,color:'#3d5afe',border:'1px solid #3d5afe44',borderRadius:6,padding:'2px 8px',textDecoration:'none',fontWeight:600,flexShrink:0}}
-                    onClick={e=>e.stopPropagation()}>
-                    Apostar
-                  </a>
-                )}
-                <div style={{textAlign:'center',minWidth:54}}>
-                  <div style={{fontSize:22,fontWeight:900,color:isMelhor?'#00e676':'#e8eaf6',fontFamily:"'Bebas Neue',cursive"}}>{item.odd.toFixed(2)}</div>
+                {item.href&&<a href={item.href} target="_blank" rel="noreferrer" style={{fontSize:10,color:'#3d5afe',border:'1px solid #3d5afe44',borderRadius:6,padding:'3px 9px',textDecoration:'none',fontWeight:700,flexShrink:0}}>Apostar</a>}
+                <div style={{textAlign:'center',minWidth:56}}>
+                  <div style={{fontSize:26,fontWeight:900,color:isMelhor?'#00e676':'#ffab00',fontFamily:"'Bebas Neue',cursive",lineHeight:1}}>{item.odd.toFixed(2)}</div>
                 </div>
-                <div style={{textAlign:'right',minWidth:76}}>
-                  <div style={{fontSize:12,fontWeight:700,color:ev>0.02?'#00e676':ev>-0.02?'#ffab00':'#ff5252'}}>EV {ev>0?'+':''}{(ev*100).toFixed(1)}%</div>
-                  {isMelhor
-                    ? <div style={{fontSize:10,color:'#00e676',fontWeight:700}}>MELHOR</div>
-                    : <div style={{fontSize:10,color:'#8892a4'}}>-{(((melhor.odd-item.odd)/melhor.odd)*100).toFixed(1)}%</div>}
+                <div style={{textAlign:'right',minWidth:90}}>
+                  <div style={{fontSize:13,fontWeight:700,color:ev>0.02?'#00e676':ev>-0.02?'#ffab00':'#ff5252'}}>EV {ev>0?'+':''}{(ev*100).toFixed(1)}%</div>
+                  {isMelhor?<div style={{fontSize:10,color:'#00e676',fontWeight:700}}>MELHOR</div>:<div style={{fontSize:10,color:'#8892a4'}}>-{diffVsMelhor}% vs melhor</div>}
                 </div>
               </div>
             )
           })}
         </div>
-        {diferenca > 0 && (
-          <div style={{marginTop:8,padding:'8px 12px',background:'#ffab0011',border:'1px solid #ffab0022',borderRadius:8,fontSize:11,color:'#ffab00'}}>
-            Diferenca de {diferenca}% entre melhor ({melhor.casa}) e pior odd ({pior.casa})
-          </div>
-        )}
       </div>
     )
   }
 
   return (
     <div style={{display:'flex',flexDirection:'column',gap:20}}>
+      {/* Teste de API */}
       <GlassCard>
-        <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>Comparador de Odds em Tempo Real</div>
-        <div style={{color:'#8892a4',fontSize:12,marginBottom:18}}>Busca odds reais de 250+ casas via odds-api.io. Encontra onde tem mais valor.</div>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10}}>
+          <div>
+            <div style={{fontWeight:700,fontSize:15}}>Comparador de Odds em Tempo Real</div>
+            <div style={{color:'#8892a4',fontSize:12,marginTop:2}}>Odds reais de 250+ casas via odds-api.io</div>
+          </div>
+          <button onClick={testarAPI} disabled={testando} style={{background:'#1a2040',border:'1px solid #3d5afe44',color:'#7c8cff',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontSize:12,fontWeight:700}}>
+            {testando?'Testando...':'Testar Conexao'}
+          </button>
+        </div>
+        {testeResult&&(
+          <div style={{marginTop:10,padding:'8px 12px',background:testeResult.ok?'#00e67611':'#ff174411',border:`1px solid ${testeResult.ok?'#00e67633':'#ff174433'}`,borderRadius:8,fontSize:12,color:testeResult.ok?'#00e676':'#ff7070'}}>
+            {testeResult.msg}
+          </div>
+        )}
+      </GlassCard>
 
-        <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:10,alignItems:'end',marginBottom:16}}>
+      <GlassCard>
+        <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:10,alignItems:'end'}}>
           <div>
             <label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>BUSCAR PARTIDA</label>
             <input
-              value={busca}
-              onChange={e=>setBusca(e.target.value)}
+              value={busca} onChange={e=>setBusca(e.target.value)}
               onKeyDown={e=>e.key==='Enter'&&buscarEventos()}
-              placeholder="Ex: Flamengo, Manchester City, Real Madrid..."
+              placeholder="Ex: Manchester City, Real Madrid, Flamengo..."
               style={inp}
             />
           </div>
           <button onClick={buscarEventos} disabled={loadingEventos} style={{background:'linear-gradient(135deg,#3d5afe,#651fff)',border:'none',color:'#fff',borderRadius:8,padding:'10px 22px',cursor:'pointer',fontWeight:700,fontSize:13,boxShadow:'0 4px 14px #3d5afe33',whiteSpace:'nowrap'}}>
-            {loadingEventos ? 'Buscando...' : 'Buscar'}
+            {loadingEventos?'Buscando...':'Buscar'}
           </button>
         </div>
 
-        {erroMsg && <div style={{color:'#ff7070',fontSize:12,marginBottom:10,padding:'8px 12px',background:'#ff174411',borderRadius:8}}>{erroMsg}</div>}
+        {erro&&<div style={{marginTop:12,color:'#ff7070',fontSize:12,padding:'9px 13px',background:'#ff174411',border:'1px solid #ff174433',borderRadius:8}}>{erro}</div>}
 
-        {eventos.length > 0 && !eventoSel && (
-          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+        {!eventoSel&&eventos.length>0&&(
+          <div style={{marginTop:14,display:'flex',flexDirection:'column',gap:7}}>
             <div style={{fontSize:11,color:'#8892a4',fontWeight:700,marginBottom:4}}>SELECIONE O JOGO</div>
-            {eventos.map(ev => (
+            {eventos.map(ev=>(
               <button key={ev.id} onClick={()=>buscarOdds(ev)}
-                style={{background:'#0f1320',border:'1px solid #1e2538',borderRadius:10,padding:'12px 16px',cursor:'pointer',textAlign:'left',display:'flex',justifyContent:'space-between',alignItems:'center',color:'#e8eaf6'}}
+                style={{background:'#0f1320',border:'1px solid #1e2538',borderRadius:10,padding:'12px 16px',cursor:'pointer',textAlign:'left',display:'flex',justifyContent:'space-between',alignItems:'center',color:'#e8eaf6',transition:'all 0.15s'}}
                 onMouseEnter={e=>e.currentTarget.style.borderColor='#3d5afe'}
                 onMouseLeave={e=>e.currentTarget.style.borderColor='#1e2538'}>
                 <div>
-                  <div style={{fontSize:13,fontWeight:700}}>{ev.home} x {ev.away}</div>
-                  <div style={{fontSize:11,color:'#8892a4',marginTop:2}}>{ev.league || ev.sport} · {ev.date ? new Date(ev.date).toLocaleDateString('pt-BR') : ''}</div>
+                  <div style={{fontSize:13,fontWeight:700}}>{ev.home} <span style={{color:'#8892a4',fontWeight:400}}>x</span> {ev.away}</div>
+                  <div style={{fontSize:11,color:'#8892a4',marginTop:2}}>{ev.league||ev.sport||''}{ev.date?' · '+new Date(ev.date).toLocaleDateString('pt-BR'):''}</div>
                 </div>
-                <span style={{fontSize:11,color:'#3d5afe',fontWeight:700}}>Ver odds</span>
+                <span style={{fontSize:11,color:'#3d5afe',fontWeight:700,flexShrink:0}}>Ver odds</span>
               </button>
             ))}
           </div>
         )}
 
-        {eventoSel && (
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:'#1a2040',border:'1px solid #3d5afe44',borderRadius:10}}>
+        {eventoSel&&(
+          <div style={{marginTop:12,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:'#1a2040',border:'1px solid #3d5afe44',borderRadius:10}}>
             <div>
               <div style={{fontSize:14,fontWeight:700,color:'#7c8cff'}}>{eventoSel.home} x {eventoSel.away}</div>
               <div style={{fontSize:11,color:'#8892a4'}}>{eventoSel.league}</div>
             </div>
-            <button onClick={()=>{setEventoSel(null);setOddsData(null);setEventos([])}} style={{background:'transparent',border:'none',color:'#8892a4',cursor:'pointer',fontSize:12}}>Trocar</button>
+            <button onClick={()=>{setEventoSel(null);setOddsData(null);setEventos([])}} style={{background:'transparent',border:'none',color:'#8892a4',cursor:'pointer',fontSize:12,fontWeight:600}}>Trocar jogo</button>
           </div>
         )}
       </GlassCard>
 
-      {loadingOdds && (
-        <div style={{textAlign:'center',padding:40,color:'#8892a4'}}>
-          <div style={{fontSize:13,marginTop:10}}>Buscando odds em tempo real...</div>
-        </div>
-      )}
+      {loadingOdds&&<div style={{textAlign:'center',padding:40,color:'#8892a4',fontSize:13}}>Buscando odds em tempo real...</div>}
 
-      {oddsData && analise && (
+      {oddsData&&mercadosNomes.length>0&&(
         <>
+          {/* Selector de mercado */}
           <GlassCard>
-            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16,flexWrap:'wrap',gap:10}}>
-              <div style={{fontWeight:700,fontSize:15}}>Odds em Tempo Real</div>
-              <select value={mercadoSel} onChange={e=>setMercadoSel(e.target.value)} style={{...inp,width:'auto',fontSize:12}}>
-                {MERCADOS_API.map(m=><option key={m.key} value={m.key}>{m.label}</option>)}
-              </select>
+            <div style={{fontWeight:700,fontSize:15,marginBottom:14}}>
+              {eventoSel?.home} x {eventoSel?.away}
+              <span style={{fontSize:11,color:'#8892a4',fontWeight:400,marginLeft:10}}>{Object.keys(oddsData.bookmakers||{}).length} casas</span>
             </div>
-            <div style={{fontSize:12,color:'#8892a4',marginBottom:16}}>{analise.mercado} · {Object.keys(oddsData.bookmakers||{}).length} casas encontradas</div>
-            {Object.entries(analise.grupos).map(([label, items]) => renderGrupo(label, items))}
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:20}}>
+              {mercadosNomes.map(mk=>(
+                <button key={mk} onClick={()=>setMercadoFiltro(mk)}
+                  style={{background:mercadoAtivo===mk?'#1e2a4a':'transparent',border:`1px solid ${mercadoAtivo===mk?'#3d5afe':'#2a3048'}`,color:mercadoAtivo===mk?'#fff':'#8892a4',borderRadius:8,padding:'6px 14px',fontSize:12,fontWeight:600,cursor:'pointer'}}>
+                  {mk}
+                </button>
+              ))}
+            </div>
+            {Object.entries(grupos).map(([label,items])=>renderGrupo(label,items))}
+            <div style={{marginTop:8,padding:'10px 14px',background:'#7c8cff11',border:'1px solid #7c8cff22',borderRadius:8}}>
+              <div style={{fontSize:11,color:'#a0aec0'}}><strong style={{color:'#7c8cff'}}>EV positivo</strong> = odd acima da probabilidade media do mercado. Dados ao vivo via odds-api.io.</div>
+            </div>
           </GlassCard>
-
-          <div style={{padding:'12px 16px',background:'#7c8cff11',border:'1px solid #7c8cff22',borderRadius:12}}>
-            <div style={{fontSize:12,color:'#a0aec0'}}>
-              <strong style={{color:'#7c8cff'}}>EV (Expected Value)</strong>: EV positivo indica que a odd esta acima da probabilidade media do mercado — aposta com valor estatistico. Dados em tempo real via odds-api.io.
-            </div>
-          </div>
         </>
       )}
 
-      {oddsData && !analise && !loadingOdds && (
-        <GlassCard>
-          <div style={{color:'#ffab00',fontSize:13,textAlign:'center',padding:20}}>Odds disponiveis mas sem dados suficientes para o mercado selecionado. Tente outro mercado.</div>
-        </GlassCard>
+      {oddsData&&mercadosNomes.length===0&&!loadingOdds&&(
+        <GlassCard><div style={{color:'#ffab00',fontSize:13,textAlign:'center',padding:20}}>Odds retornadas mas sem mercados reconhecidos. Tente outro jogo.</div></GlassCard>
       )}
     </div>
   )
