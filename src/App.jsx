@@ -364,38 +364,65 @@ function ComparadorTab() {
     if (!items || items.length < 2) return null
     const sorted = [...items].sort((a,b) => b.odd - a.odd)
     const melhor = sorted[0]
-    const media = items.reduce((s,i)=>s+i.odd,0)/items.length
-    const probMedia = 100/media
+    // No-vig Fair Odd: remove margem das casas usando pinnacle/melhor como referencia
+    // Sum of implied probs / N = avg prob com juice; fair prob = prob / sum(probs)
+    const sumProbs = items.reduce((s,i) => s + 1/i.odd, 0)
+    const fairProbs = items.map(i => (1/i.odd) / sumProbs) // remove vig
+    const avgFairProb = fairProbs.reduce((s,p)=>s+p,0) / fairProbs.length
+    const fairOdd = +(1/avgFairProb).toFixed(2)
+    const probMedia = avgFairProb * 100
     const diferenca = +(((melhor.odd - sorted[sorted.length-1].odd)/sorted[sorted.length-1].odd)*100).toFixed(1)
     return (
       <div key={label} style={{marginBottom:24}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}}>
           <span style={{fontSize:12,fontWeight:700,color:'#7c8cff',letterSpacing:0.5}}>{label}</span>
-          {diferenca > 0 && <span style={{fontSize:10,color:'#ffab00',background:'#ffab0011',border:'1px solid #ffab0022',borderRadius:5,padding:'2px 8px'}}>Diferenca: {diferenca}%</span>}
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <span style={{fontSize:10,color:'#a0aec0',background:'#7c8cff11',border:'1px solid #7c8cff22',borderRadius:5,padding:'2px 8px'}}>Fair Odd: <strong style={{color:'#fff'}}>{fairOdd}</strong></span>
+            {diferenca > 0 && <span style={{fontSize:10,color:'#ffab00',background:'#ffab0011',border:'1px solid #ffab0022',borderRadius:5,padding:'2px 8px'}}>Spread: {diferenca}%</span>}
+          </div>
         </div>
         <div style={{display:'flex',flexDirection:'column',gap:7}}>
           {sorted.map((item,i)=>{
             const isMelhor = i===0
-            const ev = (item.odd*(probMedia/100))-1
+            // EV real: compara odd da casa vs fair odd (sem vig)
+            const ev = (item.odd * avgFairProb) - 1
+            const hasValue = ev > 0.02
             const diffVsMelhor = i===0?0:(((melhor.odd-item.odd)/melhor.odd)*100).toFixed(1)
             return (
-              <div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',background:isMelhor?'#00e67609':'#0f1320',border:`1px solid ${isMelhor?'#00e67644':'#1e2538'}`,borderRadius:11,transition:'all 0.15s'}}>
-                {isMelhor&&<div style={{width:4,height:40,background:'#00e676',borderRadius:2,flexShrink:0,boxShadow:'0 0 10px #00e67677'}}/>}
+              <div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',
+                background:hasValue?'#00e67606':isMelhor?'#ffffff04':'#0f1320',
+                border:`1px solid ${hasValue?'#00e67644':isMelhor?'#2a3a5a':'#1e2538'}`,
+                borderRadius:11,transition:'all 0.15s',position:'relative'}}>
+                {hasValue&&<div style={{position:'absolute',top:-1,right:10,background:'#00e676',color:'#001a00',fontSize:9,fontWeight:900,padding:'1px 8px',borderRadius:'0 0 6px 6px',letterSpacing:0.5}}>VALUE BET</div>}
+                {isMelhor&&!hasValue&&<div style={{width:4,height:40,background:'#7c8cff',borderRadius:2,flexShrink:0,boxShadow:'0 0 10px #7c8cff77'}}/>}
+                {hasValue&&<div style={{width:4,height:40,background:'#00e676',borderRadius:2,flexShrink:0,boxShadow:'0 0 12px #00e67699'}}/>}
                 <div style={{flex:1}}>
-                  <div style={{fontSize:14,fontWeight:700,color:isMelhor?'#00e676':'#e8eaf6'}}>{item.casa}</div>
-                  <div style={{fontSize:10,color:'#8892a4',marginTop:1}}>Prob impl: {(100/item.odd).toFixed(1)}%</div>
+                  <div style={{fontSize:14,fontWeight:700,color:hasValue?'#00e676':isMelhor?'#e8eaf6':'#a0aec0'}}>{item.casa}</div>
+                  <div style={{fontSize:10,color:'#8892a4',marginTop:1}}>
+                    Prob impl: {(100/item.odd).toFixed(1)}% | Fair: {(probMedia).toFixed(1)}%
+                  </div>
                 </div>
                 {item.href&&<a href={item.href} target="_blank" rel="noreferrer" style={{fontSize:10,color:'#3d5afe',border:'1px solid #3d5afe44',borderRadius:6,padding:'3px 9px',textDecoration:'none',fontWeight:700,flexShrink:0}}>Apostar</a>}
                 <div style={{textAlign:'center',minWidth:56}}>
-                  <div style={{fontSize:26,fontWeight:900,color:isMelhor?'#00e676':'#ffab00',fontFamily:"'Bebas Neue',cursive",lineHeight:1}}>{item.odd.toFixed(2)}</div>
+                  <div style={{fontSize:26,fontWeight:900,color:hasValue?'#00e676':isMelhor?'#fff':'#ffab00',fontFamily:"'Bebas Neue',cursive",lineHeight:1}}>{item.odd.toFixed(2)}</div>
+                  {item.odd > fairOdd && <div style={{fontSize:9,color:'#00e676',fontWeight:700}}>+{((item.odd-fairOdd)/fairOdd*100).toFixed(1)}% vs fair</div>}
+                  {item.odd <= fairOdd && <div style={{fontSize:9,color:'#8892a4'}}>{((item.odd-fairOdd)/fairOdd*100).toFixed(1)}% vs fair</div>}
                 </div>
                 <div style={{textAlign:'right',minWidth:90}}>
-                  <div style={{fontSize:13,fontWeight:700,color:ev>0.02?'#00e676':ev>-0.02?'#ffab00':'#ff5252'}}>EV {ev>0?'+':''}{(ev*100).toFixed(1)}%</div>
-                  {isMelhor?<div style={{fontSize:10,color:'#00e676',fontWeight:700}}>MELHOR</div>:<div style={{fontSize:10,color:'#8892a4'}}>-{diffVsMelhor}% vs melhor</div>}
+                  <div style={{fontSize:13,fontWeight:800,color:ev>0.05?'#00e676':ev>0?'#69ff84':ev>-0.03?'#ffab00':'#ff5252'}}>
+                    EV {ev>0?'+':''}{(ev*100).toFixed(1)}%
+                  </div>
+                  {hasValue
+                    ?<div style={{fontSize:10,color:'#00e676',fontWeight:700,marginTop:1}}>🔥 APOSTAR</div>
+                    :isMelhor?<div style={{fontSize:10,color:'#7c8cff',marginTop:1}}>MELHOR</div>
+                    :<div style={{fontSize:10,color:'#8892a4',marginTop:1}}>-{diffVsMelhor}% vs melhor</div>}
                 </div>
               </div>
             )
           })}
+        </div>
+        <div style={{marginTop:8,padding:'6px 12px',background:'#ffffff06',borderRadius:7,fontSize:10,color:'#8892a4'}}>
+          Fair Odd calculada removendo a margem (vig) das casas. Value Bet = odd da casa acima da fair odd.
         </div>
       </div>
     )
@@ -502,6 +529,60 @@ function ComparadorTab() {
 }
 
 // ===================== SUGESTOES TAB =====================
+// ===================== POISSON MODEL =====================
+// P(k; lambda) = (lambda^k * e^-lambda) / k!
+function poissonProb(lambda, k) {
+  if (lambda <= 0) return 0
+  let logP = -lambda + k * Math.log(lambda)
+  for (let i = 1; i <= k; i++) logP -= Math.log(i)
+  return Math.exp(logP)
+}
+
+// Calcula todas as probs de placar via Poisson e retorna metricas reais
+function poissonModel(lambdaHome, lambdaAway, maxGoals = 6) {
+  let homeWin = 0, draw = 0, awayWin = 0, btts = 0, over15 = 0, over25 = 0, over35 = 0
+  const matrix = [] // matrix[i][j] = prob de placar i-j
+
+  for (let h = 0; h <= maxGoals; h++) {
+    matrix[h] = []
+    const ph = poissonProb(lambdaHome, h)
+    for (let a = 0; a <= maxGoals; a++) {
+      const pa = poissonProb(lambdaAway, a)
+      const p = ph * pa
+      matrix[h][a] = p
+      if (h > a) homeWin += p
+      else if (h === a) draw += p
+      else awayWin += p
+      if (h > 0 && a > 0) btts += p
+      if (h + a > 1) over15 += p
+      if (h + a > 2) over25 += p
+      if (h + a > 3) over35 += p
+    }
+  }
+
+  // Fair odds (sem margem)
+  const fairHome = homeWin > 0 ? +(1/homeWin).toFixed(2) : 99
+  const fairDraw  = draw > 0   ? +(1/draw).toFixed(2)    : 99
+  const fairAway  = awayWin > 0 ? +(1/awayWin).toFixed(2) : 99
+
+  return {
+    homeWin: Math.round(homeWin*100), draw: Math.round(draw*100), awayWin: Math.round(awayWin*100),
+    btts: Math.round(btts*100), over15: Math.round(over15*100),
+    over25: Math.round(over25*100), over35: Math.round(over35*100),
+    fairHome, fairDraw, fairAway,
+    lambdaHome: +lambdaHome.toFixed(2), lambdaAway: +lambdaAway.toFixed(2),
+    matrix
+  }
+}
+
+// Estima lambda (gols esperados) a partir do historico de W/D/L
+// Calibrado: vitória ~ 2 gols, empate ~ 1.1, derrota ~ 0.5 (media Europeia)
+function estimateLambda(rec, isHome) {
+  if (!rec || rec.total <= 0) return isHome ? 1.4 : 1.1
+  const gpm = (rec.w * 1.9 + rec.d * 1.1 + rec.l * 0.45) / rec.total
+  return Math.max(0.3, Math.min(3.5, gpm * (isHome ? 1.1 : 0.92)))
+}
+
 function SugestoesTab() {
   const [liga, setLiga] = useState(LIGAS_ESPN[0])
   const [loading, setLoading] = useState(false)
@@ -509,8 +590,45 @@ function SugestoesTab() {
   const [searched, setSearched] = useState(false)
   const [filtro, setFiltro] = useState('todos')
 
+  // ── Poisson Distribution ─────────────────────────────────────
+  function factorial(n) { let r=1; for(let i=2;i<=n;i++) r*=i; return r }
+  function poisson(k, lambda) { return (Math.pow(lambda,k) * Math.exp(-lambda)) / factorial(k) }
+
+  // Calcula matrix de placares e agrega probabilidades de mercados
+  function calcPoisson(lambdaH, lambdaA) {
+    let homeWin=0, draw=0, awayWin=0, btts=0, over15=0, over25=0, over35=0
+    const maxGoals = 8
+    for (let h=0; h<=maxGoals; h++) {
+      for (let a=0; a<=maxGoals; a++) {
+        const p = poisson(h, lambdaH) * poisson(a, lambdaA)
+        if (h > a) homeWin += p
+        else if (h === a) draw += p
+        else awayWin += p
+        if (h > 0 && a > 0) btts += p
+        if (h + a > 1) over15 += p
+        if (h + a > 2) over25 += p
+        if (h + a > 3) over35 += p
+      }
+    }
+    return {
+      homeWin: Math.round(homeWin*100),
+      draw:    Math.round(draw*100),
+      awayWin: Math.round(awayWin*100),
+      btts:    Math.round(btts*100),
+      over15:  Math.round(over15*100),
+      over25:  Math.round(over25*100),
+      over35:  Math.round(over35*100),
+    }
+  }
+
+  // Calcula Fair Odd (sem margem da casa)
+  function fairOdd(prob) { return prob > 0 ? +(100/prob).toFixed(2) : 99 }
+
+  // Calcula Value = (Odd_casa * Prob_real) - 1
+  function calcValue(oddCasa, probReal) { return +((oddCasa * (probReal/100)) - 1).toFixed(3) }
+
   const parseRecord = (rec) => {
-    if (!rec) return {w:0,d:0,l:0,total:1}
+    if (!rec) return {w:0,d:0,l:0,total:1,goalsFor:0,goalsAgainst:0}
     const parts = rec.split('-').map(Number)
     const w=parts[0]||0, d=parts[1]||0, l=parts[2]||0
     return {w,d,l,total:Math.max(1,w+d+l)}
@@ -519,14 +637,18 @@ function SugestoesTab() {
   async function buscarSugestoes() {
     setLoading(true); setSearched(true); setSugestoes([])
     try {
-      // Promise.all — busca os 7 dias em paralelo (7x mais rapido)
+      // Promise.all — todos os 7 dias em paralelo
       const hoje = new Date()
-      const dates = Array.from({length:7}, (_,i) => { const d=new Date(hoje); d.setDate(d.getDate()+i); return d.toISOString().slice(0,10) })
-      const results = await Promise.all(dates.map(date => fetchESPN(liga.id, date).then(evs => evs.map(e=>({...e,_date:date})))))
+      const dates = Array.from({length:7}, (_,i) => {
+        const d=new Date(hoje); d.setDate(d.getDate()+i); return d.toISOString().slice(0,10)
+      })
+      const results = await Promise.all(dates.map(date =>
+        fetchESPN(liga.id, date).then(evs => evs.map(e=>({...e,_date:date})))
+      ))
       const todos = results.flat().filter(e => !e.status?.type?.completed)
 
       const cards = []
-      for (const event of todos.slice(0, 25)) {
+      for (const event of todos.slice(0, 30)) {
         const comps = event.competitions?.[0]
         const home = comps?.competitors?.find(c=>c.homeAway==='home')
         const away = comps?.competitors?.find(c=>c.homeAway==='away')
@@ -534,40 +656,72 @@ function SugestoesTab() {
 
         const hr = parseRecord(home?.records?.[0]?.summary)
         const ar = parseRecord(away?.records?.[0]?.summary)
-        const homeAllRec = parseRecord(home?.records?.[1]?.summary)
-        const awayAllRec = parseRecord(away?.records?.[1]?.summary)
 
-        const homeWinRate = hr.w / hr.total
-        const awayWinRate = ar.w / ar.total
-        const homeLoseRate = hr.l / hr.total
-        const awayLoseRate = ar.l / ar.total
-        const homeDrawRate = hr.d / hr.total
-        const awayDrawRate = ar.d / ar.total
-        const homeAttack = (hr.w + hr.d*0.4) / hr.total
-        const awayAttack = (ar.w + ar.d*0.4) / ar.total
+        // ── Lambda Poisson ────────────────────────────────────
+        // Media de gols da liga ~1.35 por time (referência europeia)
+        const leagueAvg = 1.35
+        const homeAttackStr = hr.total > 0 ? ((hr.w*3 + hr.d) / (hr.total*3)) * leagueAvg * 1.35 : leagueAvg
+        const awayAttackStr = ar.total > 0 ? ((ar.w*3 + ar.d) / (ar.total*3)) * leagueAvg * 1.10 : leagueAvg
+        const homeDefStr = hr.total > 0 ? Math.max(0.5, 1 - (hr.l / hr.total)) : 1
+        const awayDefStr = ar.total > 0 ? Math.max(0.5, 1 - (ar.l / ar.total)) : 1
 
-        const expGoals = homeAttack * 1.45 + awayAttack * 1.25
-        const over25prob = Math.min(88, Math.round(expGoals * 27 + 14))
-        const over15prob = Math.min(95, Math.round(over25prob + 14))
-        const bttsProb = Math.min(84, Math.round(homeAttack * awayAttack * 115 + 16))
-        const homeWinProb = Math.min(85, Math.round(homeWinRate * 55 + awayLoseRate * 22 + 7))
-        const awayWinProb = Math.min(80, Math.round(awayWinRate * 50 + homeLoseRate * 20 + 5))
-        const drawProb = Math.max(8, Math.min(38, 100 - homeWinProb - awayWinProb))
+        // Lambda esperado de gols de cada time nesse jogo
+        const lambdaH = +(homeAttackStr * awayDefStr).toFixed(3)
+        const lambdaA = +(awayAttackStr * homeDefStr).toFixed(3)
+
+        // Probabilidades via Poisson completo
+        const poiss = calcPoisson(lambdaH, lambdaA)
+
+        // Fair odds sem margem
+        const fairHome  = fairOdd(poiss.homeWin)
+        const fairDraw  = fairOdd(poiss.draw)
+        const fairAway  = fairOdd(poiss.awayWin)
+        const fairOver25 = fairOdd(poiss.over25)
+        const fairBTTS  = fairOdd(poiss.btts)
 
         const hora = new Date(event.date).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})
         const dataFormatada = new Date(event._date+'T12:00:00').toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit'})
 
+        // Gerar sugestoes onde a probabilidade é suficientemente alta
         const bets = []
-        if (over25prob >= 58) bets.push({tipo:'Over 2.5 Gols',prob:over25prob,oddMin:+(100/over25prob*0.92).toFixed(2),cor:'#00e676',icone:'GOL',motivo:'Ambos times com bom poder ofensivo'})
-        if (bttsProb >= 58) bets.push({tipo:'Ambas Marcam',prob:bttsProb,oddMin:+(100/bttsProb*0.92).toFixed(2),cor:'#7c8cff',icone:'BTTS',motivo:'Os dois times tem historico de marcar'})
-        if (homeWinProb >= 62) bets.push({tipo:`Vitoria ${home.team?.shortDisplayName||home.team?.displayName}`,prob:homeWinProb,oddMin:+(100/homeWinProb*0.93).toFixed(2),cor:'#ffab00',icone:'CASA',motivo:`Mandante com ${Math.round(hr.w/hr.total*100)}% de aproveitamento em casa`})
-        if (awayWinProb >= 58) bets.push({tipo:`Vitoria ${away.team?.shortDisplayName||away.team?.displayName}`,prob:awayWinProb,oddMin:+(100/awayWinProb*0.93).toFixed(2),cor:'#e040fb',icone:'FORA',motivo:`Visitante com bom aproveitamento fora`})
-        if (over15prob >= 80 && !bets.find(b=>b.tipo.includes('2.5'))) bets.push({tipo:'Over 1.5 Gols',prob:over15prob,oddMin:+(100/over15prob*0.92).toFixed(2),cor:'#00bcd4',icone:'GOL',motivo:'Alta chance de pelo menos 2 gols'})
+        if (poiss.over25 >= 52) bets.push({
+          tipo:'Over 2.5 Gols', prob:poiss.over25, fairOdd:fairOver25,
+          cor:'#00e676', icone:'GOL',
+          motivo:`λ Casa: ${lambdaH} | λ Fora: ${lambdaA} | Gols esp: ${+(lambdaH+lambdaA).toFixed(1)}`,
+          lambda: lambdaH+lambdaA
+        })
+        if (poiss.btts >= 50) bets.push({
+          tipo:'Ambas Marcam', prob:poiss.btts, fairOdd:fairBTTS,
+          cor:'#7c8cff', icone:'BTTS',
+          motivo:`Probabilidade Poisson: ${poiss.btts}% | Fair odd: ${fairBTTS}`,
+          lambda: null
+        })
+        if (poiss.homeWin >= 55) bets.push({
+          tipo:`Vitoria ${home.team?.shortDisplayName||home.team?.displayName}`,
+          prob:poiss.homeWin, fairOdd:fairHome,
+          cor:'#ffab00', icone:'CASA',
+          motivo:`Rec: ${hr.w}V-${hr.d}E-${hr.l}D | λ=${lambdaH} gols esperados`,
+          lambda: lambdaH
+        })
+        if (poiss.awayWin >= 45) bets.push({
+          tipo:`Vitoria ${away.team?.shortDisplayName||away.team?.displayName}`,
+          prob:poiss.awayWin, fairOdd:fairAway,
+          cor:'#e040fb', icone:'FORA',
+          motivo:`Rec: ${ar.w}V-${ar.d}E-${ar.l}D | λ=${lambdaA} gols esperados`,
+          lambda: lambdaA
+        })
+        if (poiss.over15 >= 72 && !bets.find(b=>b.tipo.includes('2.5'))) bets.push({
+          tipo:'Over 1.5 Gols', prob:poiss.over15, fairOdd:fairOdd(poiss.over15),
+          cor:'#00bcd4', icone:'GOL',
+          motivo:`${poiss.over15}% de prob de 2+ gols via Poisson`,
+          lambda: lambdaH+lambdaA
+        })
 
         if (bets.length === 0) continue
-        const melhor = bets.sort((a,b)=>b.prob-a.prob)[0]
-        const confianca = melhor.prob >= 70 ? 'Alta' : melhor.prob >= 60 ? 'Media' : 'Baixa'
-        const confCor = melhor.prob >= 70 ? '#00e676' : melhor.prob >= 60 ? '#ffab00' : '#ff5252'
+        const sorted = bets.sort((a,b)=>b.prob-a.prob)
+        const melhor = sorted[0]
+        const confianca = melhor.prob >= 65 ? 'Alta' : melhor.prob >= 55 ? 'Media' : 'Baixa'
+        const confCor = melhor.prob >= 65 ? '#00e676' : melhor.prob >= 55 ? '#ffab00' : '#ff5252'
 
         cards.push({
           id:event.id,
@@ -576,13 +730,11 @@ function SugestoesTab() {
           awayShort:away.team?.shortDisplayName||away.team?.displayName,
           homeLogo:home.team?.logo, awayLogo:away.team?.logo,
           homeRecord:home?.records?.[0]?.summary, awayRecord:away?.records?.[0]?.summary,
-          homeAllRecord:home?.records?.[1]?.summary||home?.records?.[0]?.summary,
-          awayAllRecord:away?.records?.[1]?.summary||away?.records?.[0]?.summary,
-          hr, ar, homeWinRate, awayWinRate, homeDrawRate, awayDrawRate,
-          data:dataFormatada, hora,
-          bets: bets.sort((a,b)=>b.prob-a.prob).slice(0,3),
+          hr, ar, data:dataFormatada, hora,
+          lambdaH, lambdaA,
+          bets: sorted.slice(0,3),
           melhor, confianca, confCor,
-          over25prob, over15prob, bttsProb, homeWinProb, awayWinProb, drawProb,
+          poiss, fairHome, fairDraw, fairAway,
         })
       }
 
@@ -599,8 +751,10 @@ function SugestoesTab() {
   return (
     <div style={{display:'flex',flexDirection:'column',gap:20}}>
       <GlassCard>
-        <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>Sugestoes de Apostas</div>
-        <div style={{color:'#8892a4',fontSize:12,marginBottom:18}}>Analisa os proximos 7 dias com estatisticas detalhadas de cada time.</div>
+        <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>Sugestoes — Modelo Poisson</div>
+        <div style={{color:'#8892a4',fontSize:12,marginBottom:18}}>
+          Probabilidades calculadas via Distribuicao de Poisson (λ por time). Fair Odds sem margem das casas.
+        </div>
         <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:10,alignItems:'end'}}>
           <div>
             <label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>COMPETICAO</label>
@@ -609,13 +763,21 @@ function SugestoesTab() {
             </select>
           </div>
           <button onClick={buscarSugestoes} disabled={loading} style={{background:'linear-gradient(135deg,#3d5afe,#651fff)',border:'none',color:'#fff',borderRadius:8,padding:'10px 22px',cursor:'pointer',fontWeight:700,fontSize:14,whiteSpace:'nowrap',boxShadow:'0 4px 16px #3d5afe44'}}>
-            {loading?'Analisando...':'Analisar Jogos'}
+            {loading ? 'Calculando...' : 'Analisar Jogos'}
           </button>
+        </div>
+
+        {/* Legenda Poisson */}
+        <div style={{marginTop:14,padding:'10px 14px',background:'#3d5afe11',border:'1px solid #3d5afe22',borderRadius:8,fontSize:11,color:'#a0aec0'}}>
+          <strong style={{color:'#7c8cff'}}>Modelo Poisson:</strong> P(k;λ) = λᵏ·e⁻λ / k! — calcula a probabilidade exata de cada placar possível e agrega em Over/Under, BTTS e resultado.
+          <strong style={{color:'#ffab00'}}> Fair Odd</strong> = odd justa sem margem da casa. Se a casa pagar acima da fair odd → <strong style={{color:'#00e676'}}>Value Bet</strong>.
         </div>
       </GlassCard>
 
       {searched && !loading && sugestoes.length === 0 && (
-        <div style={{textAlign:'center',color:'#8892a4',padding:50,background:'#111724',borderRadius:16,border:'1px solid #1e2538'}}>Nenhuma partida encontrada para os proximos 7 dias.</div>
+        <div style={{textAlign:'center',color:'#8892a4',padding:50,background:'#111724',borderRadius:16,border:'1px solid #1e2538'}}>
+          Nenhuma partida encontrada para os proximos 7 dias nessa liga.
+        </div>
       )}
 
       {sugestoes.length > 0 && (
@@ -626,7 +788,7 @@ function SugestoesTab() {
               return (
                 <button key={lbl} onClick={()=>setFiltro(filtro===val?'todos':val)}
                   style={{background:filtro===val?cor+'18':'#111724',border:`1px solid ${filtro===val?cor:cor+'33'}`,borderRadius:14,padding:'14px 18px',textAlign:'center',cursor:'pointer',transition:'all 0.15s'}}>
-                  <div style={{fontSize:10,color:cor,fontWeight:700,letterSpacing:1,marginBottom:6}}>{lbl.toUpperCase()}</div>
+                  <div style={{fontSize:10,color:cor,fontWeight:700,letterSpacing:1,marginBottom:6}}>{lbl.toUpperCase()} CONFIANCA</div>
                   <div style={{fontSize:28,fontWeight:900,color:cor,fontFamily:"'Bebas Neue',cursive"}}>{count}</div>
                 </button>
               )
@@ -635,82 +797,101 @@ function SugestoesTab() {
 
           <div style={{display:'flex',flexDirection:'column',gap:16}}>
             {filtradas.map(s => (
-              <GlassCard key={s.id} glow={s.confCor} style={{padding:'0 0 0 0',overflow:'hidden'}}>
+              <GlassCard key={s.id} glow={s.confCor} style={{padding:'0',overflow:'hidden'}}>
                 {/* Header */}
-                <div style={{padding:'18px 22px',borderBottom:'1px solid #1e2538'}}>
-                  <div style={{display:'flex',alignItems:'center',gap:12}}>
-                    <img src={s.homeLogo} style={{width:36,height:36,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
-                    <div style={{flex:1}}>
-                      <div style={{fontSize:15,fontWeight:800}}>{s.homeName} <span style={{color:'#8892a4',fontWeight:400}}>x</span> {s.awayName}</div>
-                      <div style={{fontSize:11,color:'#8892a4',marginTop:2}}>{s.data} · {s.hora}</div>
-                    </div>
-                    <img src={s.awayLogo} style={{width:36,height:36,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
-                    <div style={{background:s.confCor+'18',border:`1px solid ${s.confCor}44`,borderRadius:8,padding:'5px 12px',textAlign:'center',flexShrink:0,boxShadow:`0 0 12px ${s.confCor}22`}}>
-                      <div style={{fontSize:9,color:s.confCor,fontWeight:700,letterSpacing:1}}>CONFIANCA</div>
-                      <div style={{fontSize:14,color:s.confCor,fontWeight:900}}>{s.confianca}</div>
-                    </div>
+                <div style={{padding:'18px 22px',borderBottom:'1px solid #1e2538',display:'flex',alignItems:'center',gap:12}}>
+                  <img src={s.homeLogo} style={{width:36,height:36,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:15,fontWeight:800}}>{s.homeName} <span style={{color:'#8892a4',fontWeight:400}}>x</span> {s.awayName}</div>
+                    <div style={{fontSize:11,color:'#8892a4',marginTop:2}}>{s.data} · {s.hora} · λ={+(s.lambdaH+s.lambdaA).toFixed(2)} gols esperados</div>
+                  </div>
+                  <img src={s.awayLogo} style={{width:36,height:36,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
+                  <div style={{background:s.confCor+'18',border:`1px solid ${s.confCor}44`,borderRadius:8,padding:'5px 12px',textAlign:'center',flexShrink:0}}>
+                    <div style={{fontSize:9,color:s.confCor,fontWeight:700,letterSpacing:1}}>CONFIANCA</div>
+                    <div style={{fontSize:14,color:s.confCor,fontWeight:900}}>{s.confianca}</div>
                   </div>
                 </div>
 
-                {/* Stats dos times */}
+                {/* Poisson resultado + registros */}
                 <div style={{padding:'14px 22px',borderBottom:'1px solid #1e2538',background:'#0a0e1a'}}>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-                    {[['Casa',s.homeShort,s.hr,s.homeWinRate],['Fora',s.awayShort,s.ar,s.awayWinRate]].map(([tipo,nome,rec,wr])=>(
-                      <div key={tipo} style={{background:'#0f1320',borderRadius:12,padding:'12px 14px'}}>
-                        <div style={{fontSize:11,color:'#8892a4',marginBottom:6,fontWeight:700}}>{tipo}: {nome}</div>
-                        <div style={{display:'flex',gap:6,marginBottom:8}}>
-                          {[['V',rec.w,'#00e676'],['E',rec.d,'#ffab00'],['D',rec.l,'#ff1744']].map(([lbl,val,cor])=>(
-                            <div key={lbl} style={{flex:1,background:'#0a0e1a',borderRadius:7,padding:'5px',textAlign:'center'}}>
-                              <div style={{fontSize:9,color:cor,fontWeight:700}}>{lbl}</div>
-                              <div style={{fontSize:15,fontWeight:900,color:cor}}>{val}</div>
-                            </div>
-                          ))}
+                  {/* Resultado 1X2 */}
+                  <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',gap:8,marginBottom:14,alignItems:'center'}}>
+                    <div style={{textAlign:'center',background:'#0f1320',borderRadius:10,padding:'10px 6px'}}>
+                      <div style={{fontSize:10,color:'#ffab00',fontWeight:700,marginBottom:2}}>{s.homeShort}</div>
+                      <div style={{fontSize:24,fontWeight:900,color:'#ffab00',fontFamily:"'Bebas Neue',cursive"}}>{s.poiss.homeWin}%</div>
+                      <div style={{fontSize:10,color:'#8892a4'}}>Fair: {s.fairHome}</div>
+                      <div style={{fontSize:9,color:'#8892a4'}}>λ={s.lambdaH}</div>
+                    </div>
+                    <div style={{textAlign:'center',background:'#0f1320',borderRadius:10,padding:'10px 8px'}}>
+                      <div style={{fontSize:10,color:'#8892a4',fontWeight:700,marginBottom:2}}>EMPATE</div>
+                      <div style={{fontSize:24,fontWeight:900,color:'#8892a4',fontFamily:"'Bebas Neue',cursive"}}>{s.poiss.draw}%</div>
+                      <div style={{fontSize:10,color:'#8892a4'}}>Fair: {s.fairDraw}</div>
+                    </div>
+                    <div style={{textAlign:'center',background:'#0f1320',borderRadius:10,padding:'10px 6px'}}>
+                      <div style={{fontSize:10,color:'#7c8cff',fontWeight:700,marginBottom:2}}>{s.awayShort}</div>
+                      <div style={{fontSize:24,fontWeight:900,color:'#7c8cff',fontFamily:"'Bebas Neue',cursive"}}>{s.poiss.awayWin}%</div>
+                      <div style={{fontSize:10,color:'#8892a4'}}>Fair: {s.fairAway}</div>
+                      <div style={{fontSize:9,color:'#8892a4'}}>λ={s.lambdaA}</div>
+                    </div>
+                  </div>
+
+                  {/* Over/BTTS row */}
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8}}>
+                    {[
+                      ['Over 1.5',s.poiss.over15,'#00bcd4'],
+                      ['Over 2.5',s.poiss.over25,'#00e676'],
+                      ['Over 3.5',s.poiss.over35,'#ffab00'],
+                      ['BTTS',s.poiss.btts,'#7c8cff'],
+                    ].map(([lbl,prob,cor])=>(
+                      <div key={lbl} style={{background:'#0f1320',borderRadius:8,padding:'8px 6px',textAlign:'center'}}>
+                        <div style={{fontSize:9,color:cor,fontWeight:700,marginBottom:2}}>{lbl}</div>
+                        <div style={{fontSize:18,fontWeight:900,color:cor,fontFamily:"'Bebas Neue',cursive"}}>{prob}%</div>
+                        <div style={{background:'#1e2538',borderRadius:3,height:3,marginTop:4}}>
+                          <div style={{background:cor,borderRadius:3,height:3,width:`${prob}%`}}/>
                         </div>
-                        <div style={{background:'#1e2538',borderRadius:4,height:4}}>
-                          <div style={{background:`linear-gradient(90deg,#00e676,#00c853)`,borderRadius:4,height:4,width:`${Math.round(wr*100)}%`}}/>
-                        </div>
-                        <div style={{fontSize:10,color:'#8892a4',marginTop:4}}>{Math.round(wr*100)}% aproveitamento</div>
                       </div>
                     ))}
                   </div>
 
-                  {/* Mini prob overview */}
-                  <div style={{marginTop:12,display:'flex',gap:8}}>
-                    {[
-                      [s.homeShort,s.homeWinProb,'#ffab00'],
-                      ['Empate',s.drawProb,'#8892a4'],
-                      [s.awayShort,s.awayWinProb,'#7c8cff'],
-                    ].map(([lbl,prob,cor])=>(
-                      <div key={lbl} style={{flex:1,textAlign:'center'}}>
-                        <div style={{fontSize:10,color:'#8892a4',marginBottom:4,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{lbl}</div>
-                        <div style={{fontSize:16,fontWeight:900,color:cor,fontFamily:"'Bebas Neue',cursive"}}>{prob}%</div>
+                  {/* Records dos times */}
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginTop:12}}>
+                    {[[s.homeShort,s.hr,'Casa'],[s.awayShort,s.ar,'Fora']].map(([nome,rec,tipo])=>(
+                      <div key={tipo} style={{display:'flex',gap:6,alignItems:'center',background:'#0f1320',borderRadius:8,padding:'8px 10px'}}>
+                        <span style={{fontSize:10,color:'#8892a4',fontWeight:700,minWidth:30}}>{tipo}</span>
+                        <span style={{fontSize:11,color:'#e8eaf6',fontWeight:700,flex:1}}>{nome}</span>
+                        {[['V',rec.w,'#00e676'],['E',rec.d,'#ffab00'],['D',rec.l,'#ff1744']].map(([l,v,c])=>(
+                          <span key={l} style={{background:c+'22',color:c,borderRadius:5,padding:'1px 6px',fontSize:11,fontWeight:800,minWidth:22,textAlign:'center'}}>{v}</span>
+                        ))}
                       </div>
                     ))}
                   </div>
                 </div>
 
-                {/* Sugestoes */}
+                {/* Sugestoes com fair odd e value */}
                 <div style={{padding:'14px 22px',display:'flex',gap:10,flexWrap:'wrap'}}>
                   {s.bets.map((bet,i)=>(
-                    <div key={i} style={{background:'#0f1320',border:`1px solid ${bet.cor}22`,borderRadius:12,padding:'12px 16px',flex:1,minWidth:160,boxShadow:`0 2px 12px ${bet.cor}08`}}>
+                    <div key={i} style={{background:'#0f1320',border:`1px solid ${bet.cor}22`,borderRadius:12,padding:'12px 16px',flex:1,minWidth:160}}>
                       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
                         <span style={{background:bet.cor+'22',color:bet.cor,borderRadius:5,padding:'2px 7px',fontSize:9,fontWeight:800,letterSpacing:1}}>{bet.icone}</span>
                         <span style={{fontSize:12,fontWeight:700,color:'#e8eaf6'}}>{bet.tipo}</span>
                       </div>
-                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:8}}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:6}}>
                         <div>
-                          <div style={{fontSize:10,color:'#8892a4'}}>PROBABILIDADE</div>
+                          <div style={{fontSize:9,color:'#8892a4'}}>PROBABILIDADE</div>
                           <div style={{fontSize:26,fontWeight:900,color:bet.cor,fontFamily:"'Bebas Neue',cursive",lineHeight:1}}>{bet.prob}%</div>
                         </div>
                         <div style={{textAlign:'right'}}>
-                          <div style={{fontSize:10,color:'#8892a4'}}>ODD MINIMA</div>
-                          <div style={{fontSize:20,fontWeight:800,color:'#ffab00',fontFamily:"'Bebas Neue',cursive",lineHeight:1}}>{bet.oddMin}</div>
+                          <div style={{fontSize:9,color:'#8892a4'}}>FAIR ODD</div>
+                          <div style={{fontSize:20,fontWeight:800,color:'#ffab00',fontFamily:"'Bebas Neue',cursive",lineHeight:1}}>{bet.fairOdd}</div>
                         </div>
                       </div>
-                      <div style={{background:'#1e2538',borderRadius:4,height:4,marginBottom:6}}>
+                      <div style={{background:'#1e2538',borderRadius:4,height:4,marginBottom:8}}>
                         <div style={{background:`linear-gradient(90deg,${bet.cor}88,${bet.cor})`,borderRadius:4,height:4,width:`${bet.prob}%`,boxShadow:`0 0 6px ${bet.cor}55`}}/>
                       </div>
-                      <div style={{fontSize:10,color:'#8892a4'}}>{bet.motivo}</div>
+                      <div style={{fontSize:10,color:'#8892a4',marginBottom:6}}>{bet.motivo}</div>
+                      <div style={{fontSize:10,color:'#a0aec0',padding:'4px 8px',background:'#1a2040',borderRadius:6'}}>
+                        Se a casa pagar <strong style={{color:'#00e676'}}>{'>'}{bet.fairOdd}</strong> → <strong style={{color:'#00e676'}}>Value Bet!</strong>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -719,14 +900,15 @@ function SugestoesTab() {
           </div>
 
           <div style={{background:'#ff174411',border:'1px solid #ff174433',borderRadius:12,padding:'14px 18px'}}>
-            <div style={{fontSize:12,color:'#ff7070',fontWeight:700,marginBottom:4}}>Aviso</div>
-            <div style={{fontSize:12,color:'#a0aec0'}}>Sugestoes baseadas em estatisticas historicas ESPN. Nao garantem resultado. Aposte com responsabilidade.</div>
+            <div style={{fontSize:12,color:'#ff7070',fontWeight:700,marginBottom:4}}>Aviso de Responsabilidade</div>
+            <div style={{fontSize:12,color:'#a0aec0'}}>Probabilidades calculadas via modelo Poisson com base em historico de vitórias/empates/derrotas. Nao ha garantia de resultado. Aposte com responsabilidade.</div>
           </div>
         </>
       )}
     </div>
   )
 }
+
 
 // ===================== SCOUTS TAB =====================
 function FormaRecente({ record, cor }) {
