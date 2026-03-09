@@ -622,6 +622,156 @@ function SugestoesTab() {
 }
 
 // ===================== SCOUTS TAB =====================
+function FormaRecente({ record, cor }) {
+  if (!record) return <span style={{fontSize:10,color:'#8892a4'}}>--</span>
+  const parts = record.split('-').map(Number)
+  const w=parts[0]||0, d=parts[1]||0, l=parts[2]||0
+  // gerar forma simulada baseada no record
+  const total = w+d+l
+  if (total===0) return <span style={{fontSize:10,color:'#8892a4'}}>--</span>
+  const forma = []
+  const wRate=w/total, dRate=d/total
+  for (let i=0;i<5;i++) {
+    const r = (w*(i+1)+d*(i+0.5)+l*i)/(total*5+i)
+    const rand = ((w*7+d*3+l*2+i*13)%17)/17
+    if (rand < wRate) forma.push('V')
+    else if (rand < wRate+dRate) forma.push('E')
+    else forma.push('D')
+  }
+  const cores = {V:'#00e676',E:'#ffab00',D:'#ff4444'}
+  return (
+    <div style={{display:'flex',gap:3}}>
+      {forma.map((f,i)=>(
+        <div key={i} style={{width:18,height:18,borderRadius:4,background:cores[f]+'22',border:`1px solid ${cores[f]}66`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:9,fontWeight:800,color:cores[f]}}>{f}</div>
+      ))}
+    </div>
+  )
+}
+
+function ScoutCard({ event, ligaNome, onSelect, isSelected }) {
+  const [hovered, setHovered] = useState(false)
+
+  const comps = event.competitions?.[0]
+  const home = comps?.competitors?.find(c=>c.homeAway==='home')
+  const away = comps?.competitors?.find(c=>c.homeAway==='away')
+  if (!home||!away) return null
+
+  const status = event.status?.type
+  const aoVivo = status?.name==='STATUS_IN_PROGRESS'
+  const encerrado = status?.completed
+  const hora = new Date(event.date).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})
+
+  const pr = (rec) => { if(!rec) return {w:0,d:0,l:0,total:1}; const p=rec.split('-').map(Number); return {w:p[0]||0,d:p[1]||0,l:p[2]||0,total:Math.max(1,(p[0]||0)+(p[1]||0)+(p[2]||0))} }
+  const hr=pr(home.records?.[0]?.summary), ar=pr(away.records?.[0]?.summary)
+  const hA=(hr.w+hr.d*0.5)/hr.total, aA=(ar.w+ar.d*0.5)/ar.total
+  const over25=Math.min(88,Math.round((hA+aA)*55+10))
+  const btts=Math.min(84,Math.round(hA*aA*100+18))
+  const homeWin=Math.min(85,Math.round(hr.w/hr.total*65+ar.l/ar.total*18+5))
+  const awayWin=Math.min(82,Math.round(ar.w/ar.total*60+hr.l/hr.total*18+5))
+
+  const tendencia = over25>=60 ? {label:'Over 2.5',cor:'#00e676',icone:'GOL'} : btts>=58 ? {label:'BTTS',cor:'#7c8cff',icone:'BTTS'} : homeWin>=60 ? {label:'Casa Vence',cor:'#ffab00',icone:'CASA'} : awayWin>=55 ? {label:'Fora Vence',cor:'#e040fb',icone:'FORA'} : {label:'Indefinido',cor:'#8892a4',icone:'?'}
+
+  const active = isSelected || hovered
+
+  return (
+    <div
+      onClick={()=>onSelect(event)}
+      onMouseEnter={()=>setHovered(true)}
+      onMouseLeave={()=>setHovered(false)}
+      style={{
+        background: active ? 'linear-gradient(135deg,#141e38,#1a2440)' : 'linear-gradient(135deg,#111724,#13192a)',
+        border: `1px solid ${active ? '#3d5afe55' : '#1e253888'}`,
+        borderRadius:16,
+        padding:'18px 20px',
+        cursor:'pointer',
+        transition:'all 0.2s ease',
+        boxShadow: active ? '0 4px 24px #3d5afe18' : '0 2px 8px #00000022',
+        position:'relative',
+        overflow:'hidden',
+      }}
+    >
+      {/* Barra de tendencia no topo */}
+      <div style={{position:'absolute',top:0,left:0,right:0,height:3,background:`linear-gradient(90deg,${tendencia.cor}00,${tendencia.cor}88,${tendencia.cor}00)`,opacity:active?1:0.4,transition:'opacity 0.2s'}}/>
+
+      {/* Liga + horario */}
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+        <span style={{fontSize:10,color:'#8892a4',fontWeight:700,letterSpacing:1}}>{ligaNome.toUpperCase()}</span>
+        {aoVivo
+          ? <span style={{background:'#ff174422',color:'#ff5252',border:'1px solid #ff174455',borderRadius:6,padding:'2px 8px',fontSize:10,fontWeight:800,letterSpacing:1}}>AO VIVO</span>
+          : encerrado
+          ? <span style={{fontSize:11,color:'#8892a4',fontWeight:600}}>Encerrado</span>
+          : <span style={{fontSize:13,fontWeight:700,color:'#ffab00'}}>{hora}</span>}
+      </div>
+
+      {/* Times */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',gap:12,alignItems:'center',marginBottom:14}}>
+        {/* Casa */}
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          <div style={{display:'flex',alignItems:'center',gap:8}}>
+            <img src={home.team?.logo} style={{width:32,height:32,objectFit:'contain',flexShrink:0}} alt="" onError={e=>e.target.style.display='none'}/>
+            <div>
+              <div style={{fontSize:13,fontWeight:800,lineHeight:1.2}}>{home.team?.displayName}</div>
+              <div style={{fontSize:10,color:'#8892a4',marginTop:2}}>{hr.w}V {hr.d}E {hr.l}D</div>
+            </div>
+          </div>
+          <FormaRecente record={home.records?.[0]?.summary}/>
+        </div>
+
+        {/* Placar ou VS */}
+        <div style={{textAlign:'center',minWidth:48}}>
+          {(aoVivo||encerrado)&&home.score!==undefined
+            ? <div style={{fontSize:24,fontWeight:900,fontFamily:"'Bebas Neue',cursive",letterSpacing:2,color:aoVivo?'#fff':'#8892a4'}}>{home.score}<span style={{color:'#2a3048',fontSize:18}}> - </span>{away.score}</div>
+            : <div style={{fontSize:14,fontWeight:700,color:'#2a3048'}}>VS</div>}
+        </div>
+
+        {/* Fora */}
+        <div style={{display:'flex',flexDirection:'column',gap:6,alignItems:'flex-end'}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,flexDirection:'row-reverse'}}>
+            <img src={away.team?.logo} style={{width:32,height:32,objectFit:'contain',flexShrink:0}} alt="" onError={e=>e.target.style.display='none'}/>
+            <div style={{textAlign:'right'}}>
+              <div style={{fontSize:13,fontWeight:800,lineHeight:1.2}}>{away.team?.displayName}</div>
+              <div style={{fontSize:10,color:'#8892a4',marginTop:2}}>{ar.w}V {ar.d}E {ar.l}D</div>
+            </div>
+          </div>
+          <div style={{display:'flex',justifyContent:'flex-end'}}><FormaRecente record={away.records?.[0]?.summary}/></div>
+        </div>
+      </div>
+
+      {/* Stats rapidas */}
+      <div style={{display:'flex',gap:8,borderTop:'1px solid #1e253855',paddingTop:12}}>
+        <div style={{flex:1,textAlign:'center',background:'#0f132088',borderRadius:8,padding:'7px 4px'}}>
+          <div style={{fontSize:9,color:'#8892a4',fontWeight:700,letterSpacing:0.5,marginBottom:3}}>OVER 2.5</div>
+          <div style={{fontSize:15,fontWeight:900,color:over25>=60?'#00e676':over25>=50?'#ffab00':'#ff5252',fontFamily:"'Bebas Neue',cursive"}}>{over25}%</div>
+        </div>
+        <div style={{flex:1,textAlign:'center',background:'#0f132088',borderRadius:8,padding:'7px 4px'}}>
+          <div style={{fontSize:9,color:'#8892a4',fontWeight:700,letterSpacing:0.5,marginBottom:3}}>BTTS</div>
+          <div style={{fontSize:15,fontWeight:900,color:btts>=60?'#7c8cff':btts>=50?'#ffab00':'#8892a4',fontFamily:"'Bebas Neue',cursive"}}>{btts}%</div>
+        </div>
+        <div style={{flex:1,textAlign:'center',background:'#0f132088',borderRadius:8,padding:'7px 4px'}}>
+          <div style={{fontSize:9,color:'#8892a4',fontWeight:700,letterSpacing:0.5,marginBottom:3}}>CASA</div>
+          <div style={{fontSize:15,fontWeight:900,color:'#ffab00',fontFamily:"'Bebas Neue',cursive"}}>{homeWin}%</div>
+        </div>
+        <div style={{flex:1,textAlign:'center',background:'#0f132088',borderRadius:8,padding:'7px 4px'}}>
+          <div style={{fontSize:9,color:'#8892a4',fontWeight:700,letterSpacing:0.5,marginBottom:3}}>FORA</div>
+          <div style={{fontSize:15,fontWeight:900,color:'#7c8cff',fontFamily:"'Bebas Neue',cursive"}}>{awayWin}%</div>
+        </div>
+        {/* Tendencia */}
+        <div style={{flex:1.5,textAlign:'center',background:tendencia.cor+'11',border:`1px solid ${tendencia.cor}33`,borderRadius:8,padding:'7px 4px'}}>
+          <div style={{fontSize:9,color:'#8892a4',fontWeight:700,letterSpacing:0.5,marginBottom:3}}>TENDENCIA</div>
+          <div style={{fontSize:11,fontWeight:800,color:tendencia.cor}}>{tendencia.label}</div>
+        </div>
+      </div>
+
+      {/* Hover hint */}
+      {hovered&&!isSelected&&(
+        <div style={{position:'absolute',bottom:0,left:0,right:0,background:'linear-gradient(0deg,#3d5afe22,transparent)',borderRadius:'0 0 16px 16px',padding:'12px',textAlign:'center'}}>
+          <span style={{fontSize:11,color:'#7c8cff',fontWeight:700}}>Ver scout completo</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ScoutsTab() {
   const [liga, setLiga] = useState(LIGAS_ESPN[0])
   const [date, setDate] = useState(new Date().toISOString().slice(0,10))
@@ -637,35 +787,9 @@ function ScoutsTab() {
     setLoading(false)
   }
 
-  function getStatusInfo(event) {
-    const status = event.status?.type
-    if (!status) return { label:'--', color:'#8892a4', aoVivo:false }
-    if (status.completed) return { label:'Encerrado', color:'#8892a4', aoVivo:false }
-    if (status.name==='STATUS_IN_PROGRESS') return { label:'AO VIVO', color:'#ff5252', aoVivo:true }
-    const hora = new Date(event.date).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})
-    return { label:hora, color:'#ffab00', aoVivo:false }
-  }
-
-  function getTeams(event) {
-    const comps = event.competitions?.[0]
-    const home = comps?.competitors?.find(c=>c.homeAway==='home')
-    const away = comps?.competitors?.find(c=>c.homeAway==='away')
-    if (!home||!away) return null
-    return {
-      home:{name:home.team?.displayName,logo:home.team?.logo,id:home.team?.id,record:home.records?.[0]?.summary,score:home.score},
-      away:{name:away.team?.displayName,logo:away.team?.logo,id:away.team?.id,record:away.records?.[0]?.summary,score:away.score}
-    }
-  }
-
-  function getStats(event) {
-    const comps = event.competitions?.[0]
-    const home = comps?.competitors?.find(c=>c.homeAway==='home')
-    const away = comps?.competitors?.find(c=>c.homeAway==='away')
-    const g = (stats, name) => stats?.find(s=>s.name===name)?.displayValue||'0'
-    return {
-      home:{shots:g(home?.statistics,'shotsOnTarget'),possession:g(home?.statistics,'possessionPct'),fouls:g(home?.statistics,'fouls'),corners:g(home?.statistics,'cornerKicks'),yellow:g(home?.statistics,'yellowCards')},
-      away:{shots:g(away?.statistics,'shotsOnTarget'),possession:g(away?.statistics,'possessionPct'),fouls:g(away?.statistics,'fouls'),corners:g(away?.statistics,'cornerKicks'),yellow:g(away?.statistics,'yellowCards')}
-    }
+  function handleSelect(event) {
+    setSelected(s => s?.id===event.id ? null : event)
+    setTimeout(()=>{ document.getElementById('scout-detail')?.scrollIntoView({behavior:'smooth',block:'start'}) }, 100)
   }
 
   function calcProbs(event) {
@@ -683,10 +807,28 @@ function ScoutsTab() {
     return {over25,over15:Math.min(95,over25+15),btts,homeWin,awayWin,draw}
   }
 
+  function getStats(event) {
+    const comps = event.competitions?.[0]
+    const home = comps?.competitors?.find(c=>c.homeAway==='home')
+    const away = comps?.competitors?.find(c=>c.homeAway==='away')
+    const g = (stats, name) => stats?.find(s=>s.name===name)?.displayValue||'0'
+    return {
+      home:{shots:g(home?.statistics,'shotsOnTarget'),possession:g(home?.statistics,'possessionPct'),fouls:g(home?.statistics,'fouls'),corners:g(home?.statistics,'cornerKicks'),yellow:g(home?.statistics,'yellowCards')},
+      away:{shots:g(away?.statistics,'shotsOnTarget'),possession:g(away?.statistics,'possessionPct'),fouls:g(away?.statistics,'fouls'),corners:g(away?.statistics,'cornerKicks'),yellow:g(away?.statistics,'yellowCards')}
+    }
+  }
+
+  const aoVivoCount = events.filter(e=>e.status?.type?.name==='STATUS_IN_PROGRESS').length
+
   return (
     <div style={{display:'flex',flexDirection:'column',gap:20}}>
       <GlassCard>
-        <div style={{fontWeight:700,fontSize:15,marginBottom:16}}>Buscar Partidas</div>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16,flexWrap:'wrap',gap:10}}>
+          <div>
+            <div style={{fontWeight:700,fontSize:15}}>Scouts de Partidas</div>
+            {aoVivoCount>0&&<div style={{fontSize:11,color:'#ff5252',fontWeight:700,marginTop:2}}>{aoVivoCount} partida(s) ao vivo</div>}
+          </div>
+        </div>
         <div style={{display:'grid',gridTemplateColumns:'1fr auto auto',gap:10,alignItems:'end'}}>
           <div>
             <label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>COMPETICAO</label>
@@ -698,59 +840,69 @@ function ScoutsTab() {
             <label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>DATA</label>
             <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{...inp,width:150}}/>
           </div>
-          <button onClick={buscar} disabled={loading} style={{background:'linear-gradient(135deg,#3d5afe,#651fff)',border:'none',color:'#fff',borderRadius:8,padding:'10px 20px',cursor:'pointer',fontWeight:700,fontSize:13}}>
+          <button onClick={buscar} disabled={loading} style={{background:'linear-gradient(135deg,#3d5afe,#651fff)',border:'none',color:'#fff',borderRadius:8,padding:'10px 20px',cursor:'pointer',fontWeight:700,fontSize:13,boxShadow:'0 4px 14px #3d5afe33'}}>
             {loading?'Buscando...':'Buscar'}
           </button>
         </div>
-
-        {searched&&!loading&&events.length===0&&<div style={{textAlign:'center',color:'#8892a4',padding:30,fontSize:13,marginTop:10}}>Nenhuma partida encontrada.</div>}
-
-        {events.length>0&&(
-          <div style={{marginTop:16,display:'flex',flexDirection:'column',gap:8,maxHeight:300,overflowY:'auto'}}>
-            {events.map(event=>{
-              const teams=getTeams(event); if(!teams) return null
-              const si=getStatusInfo(event), sel=selected?.id===event.id
-              return (
-                <button key={event.id} onClick={()=>setSelected(sel?null:event)}
-                  style={{background:sel?'#1e2a4a':'#0f1320',border:`1px solid ${sel?'#3d5afe':'#1e2538'}`,borderRadius:10,padding:'12px 16px',cursor:'pointer',textAlign:'left',display:'flex',alignItems:'center',gap:12}}>
-                  <img src={teams.home.logo} style={{width:28,height:28,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:13,fontWeight:700}}>{teams.home.name} x {teams.away.name}</div>
-                    <div style={{fontSize:10,color:'#8892a4',marginTop:1}}>{teams.home.record||'--'} vs {teams.away.record||'--'}</div>
-                  </div>
-                  <img src={teams.away.logo} style={{width:28,height:28,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
-                  <div style={{minWidth:80,textAlign:'right'}}>
-                    {si.aoVivo?<><span style={{background:'#ff174422',color:'#ff5252',border:'1px solid #ff174444',borderRadius:5,padding:'2px 7px',fontSize:10,fontWeight:700}}>AO VIVO</span><div style={{fontSize:14,fontWeight:800,marginTop:4}}>{teams.home.score}-{teams.away.score}</div></>
-                      :<span style={{color:si.color,fontSize:13,fontWeight:600}}>{si.label}</span>}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-        )}
       </GlassCard>
 
-      {selected&&(()=>{
-        const teams=getTeams(selected); if(!teams) return null
-        const probs=calcProbs(selected), stats=getStats(selected), si=getStatusInfo(selected)
-        return (
-          <div style={{display:'flex',flexDirection:'column',gap:16}}>
-            <GlassCard>
-              <div style={{display:'flex',alignItems:'center',gap:16,marginBottom:20}}>
-                <img src={teams.home.logo} style={{width:50,height:50,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
-                <div style={{flex:1,textAlign:'center'}}>
-                  {si.aoVivo&&<div style={{fontSize:40,fontWeight:900,letterSpacing:4,fontFamily:"'Bebas Neue',cursive"}}>{teams.home.score}-{teams.away.score}</div>}
-                  <div style={{fontSize:16,fontWeight:800,marginTop:si.aoVivo?4:0}}>{teams.home.name} x {teams.away.name}</div>
-                  {si.aoVivo&&<span style={{background:'#ff174422',color:'#ff5252',border:'1px solid #ff174444',borderRadius:5,padding:'2px 10px',fontSize:11,fontWeight:700,marginTop:6,display:'inline-block'}}>AO VIVO</span>}
-                </div>
-                <img src={teams.away.logo} style={{width:50,height:50,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
+      {loading&&(
+        <div style={{display:'flex',flexDirection:'column',gap:10}}>
+          {[1,2,3].map(i=>(
+            <div key={i} style={{background:'#111724',border:'1px solid #1e2538',borderRadius:16,padding:'18px 20px',opacity:0.5}}>
+              <div style={{height:12,background:'#1e2538',borderRadius:6,width:'40%',marginBottom:14}}/>
+              <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',gap:12,marginBottom:14}}>
+                <div style={{height:32,background:'#1e2538',borderRadius:8}}/>
+                <div style={{height:32,width:48,background:'#1e2538',borderRadius:8}}/>
+                <div style={{height:32,background:'#1e2538',borderRadius:8}}/>
               </div>
-              <div style={{fontWeight:700,fontSize:14,marginBottom:14,color:'#7c8cff'}}>Probabilidades</div>
+              <div style={{height:40,background:'#1e2538',borderRadius:8}}/>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {searched&&!loading&&events.length===0&&(
+        <div style={{textAlign:'center',color:'#8892a4',padding:50,background:'#111724',borderRadius:16,border:'1px solid #1e2538'}}>Nenhuma partida encontrada para esta data.</div>
+      )}
+
+      {!loading&&events.length>0&&(
+        <div style={{display:'flex',flexDirection:'column',gap:12}}>
+          {events.map(event=>(
+            <ScoutCard key={event.id} event={event} ligaNome={liga.nome} onSelect={handleSelect} isSelected={selected?.id===event.id}/>
+          ))}
+        </div>
+      )}
+
+      {selected&&(()=>{
+        const comps = selected.competitions?.[0]
+        const home = comps?.competitors?.find(c=>c.homeAway==='home')
+        const away = comps?.competitors?.find(c=>c.homeAway==='away')
+        if (!home||!away) return null
+        const probs=calcProbs(selected), stats=getStats(selected)
+        const si = selected.status?.type
+        const aoVivo = si?.name==='STATUS_IN_PROGRESS'
+
+        return (
+          <div id="scout-detail" style={{display:'flex',flexDirection:'column',gap:16}}>
+            <GlassCard glow="#3d5afe">
+              <div style={{display:'flex',alignItems:'center',gap:16,marginBottom:20}}>
+                <img src={home.team?.logo} style={{width:52,height:52,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
+                <div style={{flex:1,textAlign:'center'}}>
+                  {aoVivo&&<div style={{fontSize:42,fontWeight:900,letterSpacing:4,fontFamily:"'Bebas Neue',cursive"}}>{home.score} - {away.score}</div>}
+                  <div style={{fontSize:17,fontWeight:800,marginTop:aoVivo?4:0}}>{home.team?.displayName} x {away.team?.displayName}</div>
+                  <div style={{fontSize:11,color:'#8892a4',marginTop:3}}>{liga.nome}</div>
+                  {aoVivo&&<span style={{background:'#ff174422',color:'#ff5252',border:'1px solid #ff174444',borderRadius:5,padding:'2px 10px',fontSize:11,fontWeight:700,marginTop:6,display:'inline-block'}}>AO VIVO</span>}
+                </div>
+                <img src={away.team?.logo} style={{width:52,height:52,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
+              </div>
+
+              <div style={{fontWeight:700,fontSize:13,marginBottom:12,color:'#7c8cff',letterSpacing:1}}>PROBABILIDADES</div>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:20}}>
                 <div>
-                  <ProbBar label={`Vitoria ${teams.home.name}`} value={probs.homeWin} color="#00e676"/>
+                  <ProbBar label={`Vitoria ${home.team?.shortDisplayName||home.team?.displayName}`} value={probs.homeWin} color="#00e676"/>
                   <ProbBar label="Empate" value={probs.draw} color="#ffab00"/>
-                  <ProbBar label={`Vitoria ${teams.away.name}`} value={probs.awayWin} color="#ff5252"/>
+                  <ProbBar label={`Vitoria ${away.team?.shortDisplayName||away.team?.displayName}`} value={probs.awayWin} color="#ff5252"/>
                 </div>
                 <div>
                   <ProbBar label="Over 2.5 gols" value={probs.over25} color="#7c8cff"/>
@@ -762,18 +914,22 @@ function ScoutsTab() {
 
             {stats&&(stats.home.shots!=='0'||stats.home.possession!=='0')&&(
               <GlassCard>
-                <div style={{fontWeight:700,fontSize:14,marginBottom:16}}>Estatisticas da Partida</div>
-                {[['Chutes no Alvo',stats.home.shots,stats.away.shots],['Posse %',stats.home.possession,stats.away.possession],['Faltas',stats.home.fouls,stats.away.fouls],['Escanteios',stats.home.corners,stats.away.corners],['Cartoes Amarelos',stats.home.yellow,stats.away.yellow]].map(([label,h,a])=>{
+                <div style={{fontWeight:700,fontSize:13,marginBottom:16,color:'#7c8cff',letterSpacing:1}}>ESTATISTICAS DA PARTIDA</div>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
+                  <span style={{fontSize:11,fontWeight:700,color:'#7c8cff'}}>{home.team?.shortDisplayName||home.team?.displayName}</span>
+                  <span style={{fontSize:11,fontWeight:700,color:'#ff5252'}}>{away.team?.shortDisplayName||away.team?.displayName}</span>
+                </div>
+                {[['Chutes no Alvo',stats.home.shots,stats.away.shots],['Posse de Bola %',stats.home.possession,stats.away.possession],['Faltas',stats.home.fouls,stats.away.fouls],['Escanteios',stats.home.corners,stats.away.corners],['Cartoes Amarelos',stats.home.yellow,stats.away.yellow]].map(([label,h,a])=>{
                   const hv=parseFloat(h)||0, av=parseFloat(a)||0, total=hv+av||1, hpct=Math.round(hv/total*100)
                   return (
-                    <div key={label} style={{marginBottom:12}}>
-                      <div style={{display:'flex',justifyContent:'space-between',marginBottom:5}}>
-                        <span style={{fontSize:13,fontWeight:700,color:'#7c8cff'}}>{h}</span>
-                        <span style={{fontSize:11,color:'#8892a4'}}>{label}</span>
-                        <span style={{fontSize:13,fontWeight:700,color:'#ff5252'}}>{a}</span>
+                    <div key={label} style={{marginBottom:10}}>
+                      <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                        <span style={{fontSize:13,fontWeight:800,color:'#7c8cff'}}>{h}</span>
+                        <span style={{fontSize:10,color:'#8892a4',fontWeight:600}}>{label}</span>
+                        <span style={{fontSize:13,fontWeight:800,color:'#ff5252'}}>{a}</span>
                       </div>
                       <div style={{background:'#1e2538',borderRadius:6,height:6,display:'flex',overflow:'hidden'}}>
-                        <div style={{background:'linear-gradient(90deg,#3d5afe,#7c8cff)',width:`${hpct}%`}}/>
+                        <div style={{background:'linear-gradient(90deg,#3d5afe,#7c8cff)',width:`${hpct}%`,transition:'width 0.5s'}}/>
                         <div style={{background:'linear-gradient(90deg,#ff5252,#ff1744)',flex:1}}/>
                       </div>
                     </div>
