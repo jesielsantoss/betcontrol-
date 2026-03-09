@@ -975,7 +975,7 @@ function MatchSearch({ onSelect }) {
             const comps=event.competitions?.[0],home=comps?.competitors?.find(c=>c.homeAway==='home'),away=comps?.competitors?.find(c=>c.homeAway==='away')
             return <button type="button" key={event.id} onClick={()=>sel(event)} style={{background:'#141928',border:'1px solid #2a3048',borderRadius:8,padding:'9px 12px',cursor:'pointer',textAlign:'left',display:'flex',alignItems:'center',gap:10}} onMouseEnter={e=>e.currentTarget.style.borderColor='#3d5afe'} onMouseLeave={e=>e.currentTarget.style.borderColor='#2a3048'}>
               <img src={home?.team?.logo} style={{width:22,height:22,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
-              <div style={{flex:1,fontSize:12,fontWeight:600}}>{home?.team?.displayName} x {away?.team?.displayName}</div>
+              <div style={{flex:1,fontSize:12,fontWeight:600,color:'#e8eaf6'}}>{home?.team?.displayName} x {away?.team?.displayName}</div>
               <img src={away?.team?.logo} style={{width:22,height:22,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
             </button>
           })}</div>}
