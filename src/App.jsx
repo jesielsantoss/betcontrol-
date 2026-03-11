@@ -11,6 +11,62 @@ const CHART_COLORS = ['#7c8cff','#00e676','#ffab00','#ff1744','#00bcd4','#e040fb
 
 const inp = { background:'#0f1320',border:'1px solid #2a3048',borderRadius:8,color:'#e8eaf6',padding:'9px 12px',fontSize:14,outline:'none',width:'100%',fontFamily:'inherit' }
 
+// ── Estilos de botao reutilizaveis ──
+const btnPrimary = { background:'linear-gradient(135deg,#3d5afe,#651fff)',border:'none',color:'#fff',borderRadius:8,padding:'10px 22px',cursor:'pointer',fontWeight:700,fontSize:13,boxShadow:'0 4px 14px #3d5afe33' }
+const btnGhost   = { background:'#1a2040',border:'1px solid #3d5afe33',color:'#7c8cff',borderRadius:8,padding:'8px 14px',fontWeight:600,fontSize:12,cursor:'pointer' }
+const btnDanger  = { background:'#2a1020',border:'1px solid #ff174433',color:'#ff5252',borderRadius:8,padding:'6px 10px',cursor:'pointer',fontSize:12,fontWeight:600 }
+
+// ── Formatadores seguros (evitam NaN na UI) ──
+function toMoney(v) { const n=Number(v); return Number.isFinite(n)?n.toFixed(2):'0.00' }
+function toOdd(v)   { const n=Number(v); return Number.isFinite(n)?n.toFixed(2):'0.00' }
+function safeNum(v, fb=0) { const n=Number(v); return Number.isFinite(n)?n:fb }
+
+// ── Helpers de partida (centraliza logica ESPN) ──
+function parseRecord(rec) {
+  if (!rec) return {w:0,d:0,l:0,total:1}
+  const [w=0,d=0,l=0] = rec.split('-').map(Number)
+  return {w,d,l,total:Math.max(1,w+d+l)}
+}
+function getTeamsFromEvent(event) {
+  const comps = event?.competitions?.[0]
+  const home = comps?.competitors?.find(c=>c.homeAway==='home')
+  const away = comps?.competitors?.find(c=>c.homeAway==='away')
+  return {comps,home,away}
+}
+function calcMatchProbs(event) {
+  const {home,away} = getTeamsFromEvent(event)
+  if (!home||!away) return {over25:0,over15:0,btts:0,homeWin:0,awayWin:0,draw:0,hr:{w:0,d:0,l:0,total:1},ar:{w:0,d:0,l:0,total:1}}
+  const hr = parseRecord(home?.records?.[0]?.summary)
+  const ar = parseRecord(away?.records?.[0]?.summary)
+  const hA = (hr.w+hr.d*0.5)/hr.total
+  const aA = (ar.w+ar.d*0.5)/ar.total
+  const over25  = Math.min(90, Math.round((hA+aA)*55+10))
+  const over15  = Math.min(95, over25+15)
+  const btts    = Math.min(85, Math.round(hA*aA*100+20))
+  const homeWin = Math.min(88, Math.round((hr.w/hr.total)*65+(ar.l/ar.total)*20+5))
+  const awayWin = Math.min(85, Math.round((ar.w/ar.total)*60+(hr.l/hr.total)*20+5))
+  const draw    = Math.max(5, Math.min(40, 100-homeWin-awayWin))
+  return {over25,over15,btts,homeWin,awayWin,draw,hr,ar}
+}
+function getEventStatus(event) {
+  const s = event?.status?.type
+  return {aoVivo:s?.name==='STATUS_IN_PROGRESS', encerrado:!!s?.completed}
+}
+
+// ── Toast simples ──
+let _toastTimer
+function showToast(msg, type='success') {
+  const el = document.getElementById('bc-toast')
+  if (!el) return
+  el.textContent = msg
+  el.style.background = type==='success'?'#00e67622':type==='error'?'#ff174422':'#ffab0022'
+  el.style.borderColor = type==='success'?'#00e676':type==='error'?'#ff1744':'#ffab00'
+  el.style.color = type==='success'?'#00e676':type==='error'?'#ff5252':'#ffab00'
+  el.style.opacity = '1'; el.style.transform = 'translateY(0)'
+  clearTimeout(_toastTimer)
+  _toastTimer = setTimeout(()=>{ el.style.opacity='0'; el.style.transform='translateY(10px)' }, 3000)
+}
+
 const LIGAS_ESPN = [
   { id:'bra.1',    nome:'Brasileirao Serie A' },
   { id:'bra.2',    nome:'Brasileirao Serie B' },
@@ -25,12 +81,53 @@ const LIGAS_ESPN = [
   { id:'fra.1',    nome:'Ligue 1' },
 ]
 
+// Cache ESPN — evita requisicoes repetidas
+const espnCache = {}
 async function fetchESPN(leagueId, date) {
+  const key = leagueId + '_' + date
+  if (espnCache[key]) return espnCache[key]
   const d = date.replace(/-/g,'')
   const url = `https://site.api.espn.com/apis/site/v2/sports/soccer/${leagueId}/scoreboard?dates=${d}`
-  const res = await fetch(url)
-  const data = await res.json()
-  return data.events || []
+  try {
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`ESPN HTTP ${res.status}`)
+    const data = await res.json()
+    espnCache[key] = Array.isArray(data?.events) ? data.events : []
+    return espnCache[key]
+  } catch(e) { console.warn('ESPN fetch error:', leagueId, date, e.message); return [] }
+}
+
+// Busca paralela de varios dias (7x mais rapido que sequencial)
+async function fetchESPNRange(leagueId, days = 7) {
+  const hoje = new Date()
+  const promises = Array.from({length: days}, (_, i) => {
+    const d = new Date(hoje)
+    d.setDate(d.getDate() + i)
+    return fetchESPN(leagueId, d.toISOString().slice(0,10))
+  })
+  const results = await Promise.all(promises)
+  return results.flat()
+}
+
+// Normaliza odds de qualquer bookmaker num formato unico
+function normalizeOdds(bookmakers) {
+  const markets = {}
+  Object.entries(bookmakers || {}).forEach(([book, mklist]) => {
+    const arr = Array.isArray(mklist) ? mklist : Object.values(mklist)
+    arr.forEach(m => {
+      const name = m.name || 'Mercado'
+      if (!markets[name]) markets[name] = {}
+      const odds = m.odds || m.outcomes || []
+      odds.forEach(o => {
+        const label = o.label || o.name || o.side || 'Selecao'
+        const odd = parseFloat(o.price || o.odds || o.odd || 0)
+        if (odd <= 1) return
+        if (!markets[name][label]) markets[name][label] = []
+        markets[name][label].push({ bookmaker: book, label, odd, href: o.href || m.href || null })
+      })
+    })
+  })
+  return markets
 }
 
 // ===================== SHARED COMPONENTS =====================
@@ -98,9 +195,9 @@ function DashboardTab({ bets, onNewBet, onTabChange }) {
     const won = bets.filter(b=>b.status==='ganhou')
     const lost = bets.filter(b=>b.status==='perdeu')
     const fin = won.length + lost.length
-    const invested = bets.reduce((s,b)=>s+Number(b.valor),0)
-    const returned = won.reduce((s,b)=>s+(b.retorno||0),0)
-    const profit = returned - won.reduce((s,b)=>s+Number(b.valor),0) - lost.reduce((s,b)=>s+Number(b.valor),0)
+    const invested = bets.reduce((s,b)=>s+safeNum(b.valor),0)
+    const returned = won.reduce((s,b)=>s+safeNum(b.retorno),0)
+    const profit = returned - won.reduce((s,b)=>s+safeNum(b.valor),0) - lost.reduce((s,b)=>s+safeNum(b.valor),0)
     const roi = invested>0?((returned-invested)/invested*100).toFixed(1):'0.0'
     const winrate = fin>0?((won.length/fin)*100).toFixed(0):'0'
     const streak = (() => {
@@ -137,7 +234,7 @@ function DashboardTab({ bets, onNewBet, onTabChange }) {
   return (
     <div style={{display:'flex',flexDirection:'column',gap:22}}>
       {/* Hero stats */}
-      <div style={{display:'flex',gap:14,flexWrap:'wrap'}}>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:14}}>
         <StatCard label="Lucro Total" value={`R$ ${stats.profit.toFixed(2)}`} color={stats.profit>=0?'#00e676':'#ff1744'} trend={parseFloat(stats.roi)}/>
         <StatCard label="ROI" value={`${stats.roi}%`} color={parseFloat(stats.roi)>=0?'#00e676':'#ff1744'}/>
         <StatCard label="Taxa de Acerto" value={`${stats.winrate}%`} sub={`${stats.won} ganhas / ${stats.lost} perdidas`} color="#ffab00"/>
@@ -324,38 +421,65 @@ function ComparadorTab() {
     if (!items || items.length < 2) return null
     const sorted = [...items].sort((a,b) => b.odd - a.odd)
     const melhor = sorted[0]
-    const media = items.reduce((s,i)=>s+i.odd,0)/items.length
-    const probMedia = 100/media
+    // No-vig Fair Odd: remove margem das casas usando pinnacle/melhor como referencia
+    // Sum of implied probs / N = avg prob com juice; fair prob = prob / sum(probs)
+    const sumProbs = items.reduce((s,i) => s + 1/i.odd, 0)
+    const fairProbs = items.map(i => (1/i.odd) / sumProbs) // remove vig
+    const avgFairProb = fairProbs.reduce((s,p)=>s+p,0) / fairProbs.length
+    const fairOdd = +(1/avgFairProb).toFixed(2)
+    const probMedia = avgFairProb * 100
     const diferenca = +(((melhor.odd - sorted[sorted.length-1].odd)/sorted[sorted.length-1].odd)*100).toFixed(1)
     return (
       <div key={label} style={{marginBottom:24}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}}>
           <span style={{fontSize:12,fontWeight:700,color:'#7c8cff',letterSpacing:0.5}}>{label}</span>
-          {diferenca > 0 && <span style={{fontSize:10,color:'#ffab00',background:'#ffab0011',border:'1px solid #ffab0022',borderRadius:5,padding:'2px 8px'}}>Diferenca: {diferenca}%</span>}
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <span style={{fontSize:10,color:'#a0aec0',background:'#7c8cff11',border:'1px solid #7c8cff22',borderRadius:5,padding:'2px 8px'}}>Fair Odd: <strong style={{color:'#fff'}}>{fairOdd}</strong></span>
+            {diferenca > 0 && <span style={{fontSize:10,color:'#ffab00',background:'#ffab0011',border:'1px solid #ffab0022',borderRadius:5,padding:'2px 8px'}}>Spread: {diferenca}%</span>}
+          </div>
         </div>
         <div style={{display:'flex',flexDirection:'column',gap:7}}>
           {sorted.map((item,i)=>{
             const isMelhor = i===0
-            const ev = (item.odd*(probMedia/100))-1
+            // EV real: compara odd da casa vs fair odd (sem vig)
+            const ev = (item.odd * avgFairProb) - 1
+            const hasValue = ev > 0.02
             const diffVsMelhor = i===0?0:(((melhor.odd-item.odd)/melhor.odd)*100).toFixed(1)
             return (
-              <div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',background:isMelhor?'#00e67609':'#0f1320',border:`1px solid ${isMelhor?'#00e67644':'#1e2538'}`,borderRadius:11,transition:'all 0.15s'}}>
-                {isMelhor&&<div style={{width:4,height:40,background:'#00e676',borderRadius:2,flexShrink:0,boxShadow:'0 0 10px #00e67677'}}/>}
+              <div key={i} style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',
+                background:hasValue?'#00e67606':isMelhor?'#ffffff04':'#0f1320',
+                border:`1px solid ${hasValue?'#00e67644':isMelhor?'#2a3a5a':'#1e2538'}`,
+                borderRadius:11,transition:'all 0.15s',position:'relative'}}>
+                {hasValue&&<div style={{position:'absolute',top:-1,right:10,background:'#00e676',color:'#001a00',fontSize:9,fontWeight:900,padding:'1px 8px',borderRadius:'0 0 6px 6px',letterSpacing:0.5}}>VALUE BET</div>}
+                {isMelhor&&!hasValue&&<div style={{width:4,height:40,background:'#7c8cff',borderRadius:2,flexShrink:0,boxShadow:'0 0 10px #7c8cff77'}}/>}
+                {hasValue&&<div style={{width:4,height:40,background:'#00e676',borderRadius:2,flexShrink:0,boxShadow:'0 0 12px #00e67699'}}/>}
                 <div style={{flex:1}}>
-                  <div style={{fontSize:14,fontWeight:700,color:isMelhor?'#00e676':'#e8eaf6'}}>{item.casa}</div>
-                  <div style={{fontSize:10,color:'#8892a4',marginTop:1}}>Prob impl: {(100/item.odd).toFixed(1)}%</div>
+                  <div style={{fontSize:14,fontWeight:700,color:hasValue?'#00e676':isMelhor?'#e8eaf6':'#a0aec0'}}>{item.casa}</div>
+                  <div style={{fontSize:10,color:'#8892a4',marginTop:1}}>
+                    Prob impl: {(100/item.odd).toFixed(1)}% | Fair: {(probMedia).toFixed(1)}%
+                  </div>
                 </div>
                 {item.href&&<a href={item.href} target="_blank" rel="noreferrer" style={{fontSize:10,color:'#3d5afe',border:'1px solid #3d5afe44',borderRadius:6,padding:'3px 9px',textDecoration:'none',fontWeight:700,flexShrink:0}}>Apostar</a>}
                 <div style={{textAlign:'center',minWidth:56}}>
-                  <div style={{fontSize:26,fontWeight:900,color:isMelhor?'#00e676':'#ffab00',fontFamily:"'Bebas Neue',cursive",lineHeight:1}}>{item.odd.toFixed(2)}</div>
+                  <div style={{fontSize:26,fontWeight:900,color:hasValue?'#00e676':isMelhor?'#fff':'#ffab00',fontFamily:"'Bebas Neue',cursive",lineHeight:1}}>{item.odd.toFixed(2)}</div>
+                  {item.odd > fairOdd && <div style={{fontSize:9,color:'#00e676',fontWeight:700}}>+{((item.odd-fairOdd)/fairOdd*100).toFixed(1)}% vs fair</div>}
+                  {item.odd <= fairOdd && <div style={{fontSize:9,color:'#8892a4'}}>{((item.odd-fairOdd)/fairOdd*100).toFixed(1)}% vs fair</div>}
                 </div>
                 <div style={{textAlign:'right',minWidth:90}}>
-                  <div style={{fontSize:13,fontWeight:700,color:ev>0.02?'#00e676':ev>-0.02?'#ffab00':'#ff5252'}}>EV {ev>0?'+':''}{(ev*100).toFixed(1)}%</div>
-                  {isMelhor?<div style={{fontSize:10,color:'#00e676',fontWeight:700}}>MELHOR</div>:<div style={{fontSize:10,color:'#8892a4'}}>-{diffVsMelhor}% vs melhor</div>}
+                  <div style={{fontSize:13,fontWeight:800,color:ev>0.05?'#00e676':ev>0?'#69ff84':ev>-0.03?'#ffab00':'#ff5252'}}>
+                    EV {ev>0?'+':''}{(ev*100).toFixed(1)}%
+                  </div>
+                  {hasValue
+                    ?<div style={{fontSize:10,color:'#00e676',fontWeight:700,marginTop:1}}>🔥 APOSTAR</div>
+                    :isMelhor?<div style={{fontSize:10,color:'#7c8cff',marginTop:1}}>MELHOR</div>
+                    :<div style={{fontSize:10,color:'#8892a4',marginTop:1}}>-{diffVsMelhor}% vs melhor</div>}
                 </div>
               </div>
             )
           })}
+        </div>
+        <div style={{marginTop:8,padding:'6px 12px',background:'#ffffff06',borderRadius:7,fontSize:10,color:'#8892a4'}}>
+          Fair Odd calculada removendo a margem (vig) das casas. Value Bet = odd da casa acima da fair odd.
         </div>
       </div>
     )
@@ -462,6 +586,60 @@ function ComparadorTab() {
 }
 
 // ===================== SUGESTOES TAB =====================
+// ===================== POISSON MODEL =====================
+// P(k; lambda) = (lambda^k * e^-lambda) / k!
+function poissonProb(lambda, k) {
+  if (lambda <= 0) return 0
+  let logP = -lambda + k * Math.log(lambda)
+  for (let i = 1; i <= k; i++) logP -= Math.log(i)
+  return Math.exp(logP)
+}
+
+// Calcula todas as probs de placar via Poisson e retorna metricas reais
+function poissonModel(lambdaHome, lambdaAway, maxGoals = 6) {
+  let homeWin = 0, draw = 0, awayWin = 0, btts = 0, over15 = 0, over25 = 0, over35 = 0
+  const matrix = [] // matrix[i][j] = prob de placar i-j
+
+  for (let h = 0; h <= maxGoals; h++) {
+    matrix[h] = []
+    const ph = poissonProb(lambdaHome, h)
+    for (let a = 0; a <= maxGoals; a++) {
+      const pa = poissonProb(lambdaAway, a)
+      const p = ph * pa
+      matrix[h][a] = p
+      if (h > a) homeWin += p
+      else if (h === a) draw += p
+      else awayWin += p
+      if (h > 0 && a > 0) btts += p
+      if (h + a > 1) over15 += p
+      if (h + a > 2) over25 += p
+      if (h + a > 3) over35 += p
+    }
+  }
+
+  // Fair odds (sem margem)
+  const fairHome = homeWin > 0 ? +(1/homeWin).toFixed(2) : 99
+  const fairDraw  = draw > 0   ? +(1/draw).toFixed(2)    : 99
+  const fairAway  = awayWin > 0 ? +(1/awayWin).toFixed(2) : 99
+
+  return {
+    homeWin: Math.round(homeWin*100), draw: Math.round(draw*100), awayWin: Math.round(awayWin*100),
+    btts: Math.round(btts*100), over15: Math.round(over15*100),
+    over25: Math.round(over25*100), over35: Math.round(over35*100),
+    fairHome, fairDraw, fairAway,
+    lambdaHome: +lambdaHome.toFixed(2), lambdaAway: +lambdaAway.toFixed(2),
+    matrix
+  }
+}
+
+// Estima lambda (gols esperados) a partir do historico de W/D/L
+// Calibrado: vitória ~ 2 gols, empate ~ 1.1, derrota ~ 0.5 (media Europeia)
+function estimateLambda(rec, isHome) {
+  if (!rec || rec.total <= 0) return isHome ? 1.4 : 1.1
+  const gpm = (rec.w * 1.9 + rec.d * 1.1 + rec.l * 0.45) / rec.total
+  return Math.max(0.3, Math.min(3.5, gpm * (isHome ? 1.1 : 0.92)))
+}
+
 function SugestoesTab() {
   const [liga, setLiga] = useState(LIGAS_ESPN[0])
   const [loading, setLoading] = useState(false)
@@ -469,8 +647,45 @@ function SugestoesTab() {
   const [searched, setSearched] = useState(false)
   const [filtro, setFiltro] = useState('todos')
 
+  // ── Poisson Distribution ─────────────────────────────────────
+  function factorial(n) { let r=1; for(let i=2;i<=n;i++) r*=i; return r }
+  function poisson(k, lambda) { return (Math.pow(lambda,k) * Math.exp(-lambda)) / factorial(k) }
+
+  // Calcula matrix de placares e agrega probabilidades de mercados
+  function calcPoisson(lambdaH, lambdaA) {
+    let homeWin=0, draw=0, awayWin=0, btts=0, over15=0, over25=0, over35=0
+    const maxGoals = 8
+    for (let h=0; h<=maxGoals; h++) {
+      for (let a=0; a<=maxGoals; a++) {
+        const p = poisson(h, lambdaH) * poisson(a, lambdaA)
+        if (h > a) homeWin += p
+        else if (h === a) draw += p
+        else awayWin += p
+        if (h > 0 && a > 0) btts += p
+        if (h + a > 1) over15 += p
+        if (h + a > 2) over25 += p
+        if (h + a > 3) over35 += p
+      }
+    }
+    return {
+      homeWin: Math.round(homeWin*100),
+      draw:    Math.round(draw*100),
+      awayWin: Math.round(awayWin*100),
+      btts:    Math.round(btts*100),
+      over15:  Math.round(over15*100),
+      over25:  Math.round(over25*100),
+      over35:  Math.round(over35*100),
+    }
+  }
+
+  // Calcula Fair Odd (sem margem da casa)
+  function fairOdd(prob) { return prob > 0 ? +(100/prob).toFixed(2) : 99 }
+
+  // Calcula Value = (Odd_casa * Prob_real) - 1
+  function calcValue(oddCasa, probReal) { return +((oddCasa * (probReal/100)) - 1).toFixed(3) }
+
   const parseRecord = (rec) => {
-    if (!rec) return {w:0,d:0,l:0,total:1}
+    if (!rec) return {w:0,d:0,l:0,total:1,goalsFor:0,goalsAgainst:0}
     const parts = rec.split('-').map(Number)
     const w=parts[0]||0, d=parts[1]||0, l=parts[2]||0
     return {w,d,l,total:Math.max(1,w+d+l)}
@@ -479,18 +694,18 @@ function SugestoesTab() {
   async function buscarSugestoes() {
     setLoading(true); setSearched(true); setSugestoes([])
     try {
+      // Promise.all — todos os 7 dias em paralelo
       const hoje = new Date()
-      const todos = []
-      for (let i = 0; i <= 6; i++) {
-        const d = new Date(hoje)
-        d.setDate(d.getDate() + i)
-        const date = d.toISOString().slice(0,10)
-        const events = await fetchESPN(liga.id, date)
-        events.forEach(e => { if (!e.status?.type?.completed) todos.push({...e, _date: date}) })
-      }
+      const dates = Array.from({length:7}, (_,i) => {
+        const d=new Date(hoje); d.setDate(d.getDate()+i); return d.toISOString().slice(0,10)
+      })
+      const results = await Promise.all(dates.map(date =>
+        fetchESPN(liga.id, date).then(evs => evs.map(e=>({...e,_date:date})))
+      ))
+      const todos = results.flat().filter(e => !e.status?.type?.completed)
 
       const cards = []
-      for (const event of todos.slice(0, 25)) {
+      for (const event of todos.slice(0, 30)) {
         const comps = event.competitions?.[0]
         const home = comps?.competitors?.find(c=>c.homeAway==='home')
         const away = comps?.competitors?.find(c=>c.homeAway==='away')
@@ -498,40 +713,72 @@ function SugestoesTab() {
 
         const hr = parseRecord(home?.records?.[0]?.summary)
         const ar = parseRecord(away?.records?.[0]?.summary)
-        const homeAllRec = parseRecord(home?.records?.[1]?.summary)
-        const awayAllRec = parseRecord(away?.records?.[1]?.summary)
 
-        const homeWinRate = hr.w / hr.total
-        const awayWinRate = ar.w / ar.total
-        const homeLoseRate = hr.l / hr.total
-        const awayLoseRate = ar.l / ar.total
-        const homeDrawRate = hr.d / hr.total
-        const awayDrawRate = ar.d / ar.total
-        const homeAttack = (hr.w + hr.d*0.4) / hr.total
-        const awayAttack = (ar.w + ar.d*0.4) / ar.total
+        // ── Lambda Poisson ────────────────────────────────────
+        // Media de gols da liga ~1.35 por time (referência europeia)
+        const leagueAvg = 1.35
+        const homeAttackStr = hr.total > 0 ? ((hr.w*3 + hr.d) / (hr.total*3)) * leagueAvg * 1.35 : leagueAvg
+        const awayAttackStr = ar.total > 0 ? ((ar.w*3 + ar.d) / (ar.total*3)) * leagueAvg * 1.10 : leagueAvg
+        const homeDefStr = hr.total > 0 ? Math.max(0.5, 1 - (hr.l / hr.total)) : 1
+        const awayDefStr = ar.total > 0 ? Math.max(0.5, 1 - (ar.l / ar.total)) : 1
 
-        const expGoals = homeAttack * 1.45 + awayAttack * 1.25
-        const over25prob = Math.min(88, Math.round(expGoals * 27 + 14))
-        const over15prob = Math.min(95, Math.round(over25prob + 14))
-        const bttsProb = Math.min(84, Math.round(homeAttack * awayAttack * 115 + 16))
-        const homeWinProb = Math.min(85, Math.round(homeWinRate * 55 + awayLoseRate * 22 + 7))
-        const awayWinProb = Math.min(80, Math.round(awayWinRate * 50 + homeLoseRate * 20 + 5))
-        const drawProb = Math.max(8, Math.min(38, 100 - homeWinProb - awayWinProb))
+        // Lambda esperado de gols de cada time nesse jogo
+        const lambdaH = +(homeAttackStr * awayDefStr).toFixed(3)
+        const lambdaA = +(awayAttackStr * homeDefStr).toFixed(3)
+
+        // Probabilidades via Poisson completo
+        const poiss = calcPoisson(lambdaH, lambdaA)
+
+        // Fair odds sem margem
+        const fairHome  = fairOdd(poiss.homeWin)
+        const fairDraw  = fairOdd(poiss.draw)
+        const fairAway  = fairOdd(poiss.awayWin)
+        const fairOver25 = fairOdd(poiss.over25)
+        const fairBTTS  = fairOdd(poiss.btts)
 
         const hora = new Date(event.date).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})
         const dataFormatada = new Date(event._date+'T12:00:00').toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit'})
 
+        // Gerar sugestoes onde a probabilidade é suficientemente alta
         const bets = []
-        if (over25prob >= 58) bets.push({tipo:'Over 2.5 Gols',prob:over25prob,oddMin:+(100/over25prob*0.92).toFixed(2),cor:'#00e676',icone:'GOL',motivo:'Ambos times com bom poder ofensivo'})
-        if (bttsProb >= 58) bets.push({tipo:'Ambas Marcam',prob:bttsProb,oddMin:+(100/bttsProb*0.92).toFixed(2),cor:'#7c8cff',icone:'BTTS',motivo:'Os dois times tem historico de marcar'})
-        if (homeWinProb >= 62) bets.push({tipo:`Vitoria ${home.team?.shortDisplayName||home.team?.displayName}`,prob:homeWinProb,oddMin:+(100/homeWinProb*0.93).toFixed(2),cor:'#ffab00',icone:'CASA',motivo:`Mandante com ${Math.round(hr.w/hr.total*100)}% de aproveitamento em casa`})
-        if (awayWinProb >= 58) bets.push({tipo:`Vitoria ${away.team?.shortDisplayName||away.team?.displayName}`,prob:awayWinProb,oddMin:+(100/awayWinProb*0.93).toFixed(2),cor:'#e040fb',icone:'FORA',motivo:`Visitante com bom aproveitamento fora`})
-        if (over15prob >= 80 && !bets.find(b=>b.tipo.includes('2.5'))) bets.push({tipo:'Over 1.5 Gols',prob:over15prob,oddMin:+(100/over15prob*0.92).toFixed(2),cor:'#00bcd4',icone:'GOL',motivo:'Alta chance de pelo menos 2 gols'})
+        if (poiss.over25 >= 52) bets.push({
+          tipo:'Over 2.5 Gols', prob:poiss.over25, fairOdd:fairOver25,
+          cor:'#00e676', icone:'GOL',
+          motivo:`λ Casa: ${lambdaH} | λ Fora: ${lambdaA} | Gols esp: ${+(lambdaH+lambdaA).toFixed(1)}`,
+          lambda: lambdaH+lambdaA
+        })
+        if (poiss.btts >= 50) bets.push({
+          tipo:'Ambas Marcam', prob:poiss.btts, fairOdd:fairBTTS,
+          cor:'#7c8cff', icone:'BTTS',
+          motivo:`Probabilidade Poisson: ${poiss.btts}% | Fair odd: ${fairBTTS}`,
+          lambda: null
+        })
+        if (poiss.homeWin >= 55) bets.push({
+          tipo:`Vitoria ${home.team?.shortDisplayName||home.team?.displayName}`,
+          prob:poiss.homeWin, fairOdd:fairHome,
+          cor:'#ffab00', icone:'CASA',
+          motivo:`Rec: ${hr.w}V-${hr.d}E-${hr.l}D | λ=${lambdaH} gols esperados`,
+          lambda: lambdaH
+        })
+        if (poiss.awayWin >= 45) bets.push({
+          tipo:`Vitoria ${away.team?.shortDisplayName||away.team?.displayName}`,
+          prob:poiss.awayWin, fairOdd:fairAway,
+          cor:'#e040fb', icone:'FORA',
+          motivo:`Rec: ${ar.w}V-${ar.d}E-${ar.l}D | λ=${lambdaA} gols esperados`,
+          lambda: lambdaA
+        })
+        if (poiss.over15 >= 72 && !bets.find(b=>b.tipo.includes('2.5'))) bets.push({
+          tipo:'Over 1.5 Gols', prob:poiss.over15, fairOdd:fairOdd(poiss.over15),
+          cor:'#00bcd4', icone:'GOL',
+          motivo:`${poiss.over15}% de prob de 2+ gols via Poisson`,
+          lambda: lambdaH+lambdaA
+        })
 
         if (bets.length === 0) continue
-        const melhor = bets.sort((a,b)=>b.prob-a.prob)[0]
-        const confianca = melhor.prob >= 70 ? 'Alta' : melhor.prob >= 60 ? 'Media' : 'Baixa'
-        const confCor = melhor.prob >= 70 ? '#00e676' : melhor.prob >= 60 ? '#ffab00' : '#ff5252'
+        const sorted = bets.sort((a,b)=>b.prob-a.prob)
+        const melhor = sorted[0]
+        const confianca = melhor.prob >= 65 ? 'Alta' : melhor.prob >= 55 ? 'Media' : 'Baixa'
+        const confCor = melhor.prob >= 65 ? '#00e676' : melhor.prob >= 55 ? '#ffab00' : '#ff5252'
 
         cards.push({
           id:event.id,
@@ -540,13 +787,11 @@ function SugestoesTab() {
           awayShort:away.team?.shortDisplayName||away.team?.displayName,
           homeLogo:home.team?.logo, awayLogo:away.team?.logo,
           homeRecord:home?.records?.[0]?.summary, awayRecord:away?.records?.[0]?.summary,
-          homeAllRecord:home?.records?.[1]?.summary||home?.records?.[0]?.summary,
-          awayAllRecord:away?.records?.[1]?.summary||away?.records?.[0]?.summary,
-          hr, ar, homeWinRate, awayWinRate, homeDrawRate, awayDrawRate,
-          data:dataFormatada, hora,
-          bets: bets.sort((a,b)=>b.prob-a.prob).slice(0,3),
+          hr, ar, data:dataFormatada, hora,
+          lambdaH, lambdaA,
+          bets: sorted.slice(0,3),
           melhor, confianca, confCor,
-          over25prob, over15prob, bttsProb, homeWinProb, awayWinProb, drawProb,
+          poiss, fairHome, fairDraw, fairAway,
         })
       }
 
@@ -563,8 +808,10 @@ function SugestoesTab() {
   return (
     <div style={{display:'flex',flexDirection:'column',gap:20}}>
       <GlassCard>
-        <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>Sugestoes de Apostas</div>
-        <div style={{color:'#8892a4',fontSize:12,marginBottom:18}}>Analisa os proximos 7 dias com estatisticas detalhadas de cada time.</div>
+        <div style={{fontWeight:700,fontSize:15,marginBottom:4}}>Sugestoes — Modelo Poisson</div>
+        <div style={{color:'#8892a4',fontSize:12,marginBottom:18}}>
+          Probabilidades calculadas via Distribuicao de Poisson (λ por time). Fair Odds sem margem das casas.
+        </div>
         <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:10,alignItems:'end'}}>
           <div>
             <label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>COMPETICAO</label>
@@ -573,13 +820,21 @@ function SugestoesTab() {
             </select>
           </div>
           <button onClick={buscarSugestoes} disabled={loading} style={{background:'linear-gradient(135deg,#3d5afe,#651fff)',border:'none',color:'#fff',borderRadius:8,padding:'10px 22px',cursor:'pointer',fontWeight:700,fontSize:14,whiteSpace:'nowrap',boxShadow:'0 4px 16px #3d5afe44'}}>
-            {loading?'Analisando...':'Analisar Jogos'}
+            {loading ? 'Calculando...' : 'Analisar Jogos'}
           </button>
+        </div>
+
+        {/* Legenda Poisson */}
+        <div style={{marginTop:14,padding:'10px 14px',background:'#3d5afe11',border:'1px solid #3d5afe22',borderRadius:8,fontSize:11,color:'#a0aec0'}}>
+          <strong style={{color:'#7c8cff'}}>Modelo Poisson:</strong> P(k;λ) = λᵏ·e⁻λ / k! — calcula a probabilidade exata de cada placar possível e agrega em Over/Under, BTTS e resultado.
+          <strong style={{color:'#ffab00'}}> Fair Odd</strong> = odd justa sem margem da casa. Se a casa pagar acima da fair odd → <strong style={{color:'#00e676'}}>Value Bet</strong>.
         </div>
       </GlassCard>
 
       {searched && !loading && sugestoes.length === 0 && (
-        <div style={{textAlign:'center',color:'#8892a4',padding:50,background:'#111724',borderRadius:16,border:'1px solid #1e2538'}}>Nenhuma partida encontrada para os proximos 7 dias.</div>
+        <div style={{textAlign:'center',color:'#8892a4',padding:50,background:'#111724',borderRadius:16,border:'1px solid #1e2538'}}>
+          Nenhuma partida encontrada para os proximos 7 dias nessa liga.
+        </div>
       )}
 
       {sugestoes.length > 0 && (
@@ -590,7 +845,7 @@ function SugestoesTab() {
               return (
                 <button key={lbl} onClick={()=>setFiltro(filtro===val?'todos':val)}
                   style={{background:filtro===val?cor+'18':'#111724',border:`1px solid ${filtro===val?cor:cor+'33'}`,borderRadius:14,padding:'14px 18px',textAlign:'center',cursor:'pointer',transition:'all 0.15s'}}>
-                  <div style={{fontSize:10,color:cor,fontWeight:700,letterSpacing:1,marginBottom:6}}>{lbl.toUpperCase()}</div>
+                  <div style={{fontSize:10,color:cor,fontWeight:700,letterSpacing:1,marginBottom:6}}>{lbl.toUpperCase()} CONFIANCA</div>
                   <div style={{fontSize:28,fontWeight:900,color:cor,fontFamily:"'Bebas Neue',cursive"}}>{count}</div>
                 </button>
               )
@@ -599,82 +854,101 @@ function SugestoesTab() {
 
           <div style={{display:'flex',flexDirection:'column',gap:16}}>
             {filtradas.map(s => (
-              <GlassCard key={s.id} glow={s.confCor} style={{padding:'0 0 0 0',overflow:'hidden'}}>
+              <GlassCard key={s.id} glow={s.confCor} style={{padding:'0',overflow:'hidden'}}>
                 {/* Header */}
-                <div style={{padding:'18px 22px',borderBottom:'1px solid #1e2538'}}>
-                  <div style={{display:'flex',alignItems:'center',gap:12}}>
-                    <img src={s.homeLogo} style={{width:36,height:36,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
-                    <div style={{flex:1}}>
-                      <div style={{fontSize:15,fontWeight:800}}>{s.homeName} <span style={{color:'#8892a4',fontWeight:400}}>x</span> {s.awayName}</div>
-                      <div style={{fontSize:11,color:'#8892a4',marginTop:2}}>{s.data} · {s.hora}</div>
-                    </div>
-                    <img src={s.awayLogo} style={{width:36,height:36,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
-                    <div style={{background:s.confCor+'18',border:`1px solid ${s.confCor}44`,borderRadius:8,padding:'5px 12px',textAlign:'center',flexShrink:0,boxShadow:`0 0 12px ${s.confCor}22`}}>
-                      <div style={{fontSize:9,color:s.confCor,fontWeight:700,letterSpacing:1}}>CONFIANCA</div>
-                      <div style={{fontSize:14,color:s.confCor,fontWeight:900}}>{s.confianca}</div>
-                    </div>
+                <div style={{padding:'18px 22px',borderBottom:'1px solid #1e2538',display:'flex',alignItems:'center',gap:12}}>
+                  <img src={s.homeLogo} style={{width:36,height:36,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:15,fontWeight:800}}>{s.homeName} <span style={{color:'#8892a4',fontWeight:400}}>x</span> {s.awayName}</div>
+                    <div style={{fontSize:11,color:'#8892a4',marginTop:2}}>{s.data} · {s.hora} · λ={+(s.lambdaH+s.lambdaA).toFixed(2)} gols esperados</div>
+                  </div>
+                  <img src={s.awayLogo} style={{width:36,height:36,objectFit:'contain'}} alt="" onError={e=>e.target.style.display='none'}/>
+                  <div style={{background:s.confCor+'18',border:`1px solid ${s.confCor}44`,borderRadius:8,padding:'5px 12px',textAlign:'center',flexShrink:0}}>
+                    <div style={{fontSize:9,color:s.confCor,fontWeight:700,letterSpacing:1}}>CONFIANCA</div>
+                    <div style={{fontSize:14,color:s.confCor,fontWeight:900}}>{s.confianca}</div>
                   </div>
                 </div>
 
-                {/* Stats dos times */}
+                {/* Poisson resultado + registros */}
                 <div style={{padding:'14px 22px',borderBottom:'1px solid #1e2538',background:'#0a0e1a'}}>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-                    {[['Casa',s.homeShort,s.hr,s.homeWinRate],['Fora',s.awayShort,s.ar,s.awayWinRate]].map(([tipo,nome,rec,wr])=>(
-                      <div key={tipo} style={{background:'#0f1320',borderRadius:12,padding:'12px 14px'}}>
-                        <div style={{fontSize:11,color:'#8892a4',marginBottom:6,fontWeight:700}}>{tipo}: {nome}</div>
-                        <div style={{display:'flex',gap:6,marginBottom:8}}>
-                          {[['V',rec.w,'#00e676'],['E',rec.d,'#ffab00'],['D',rec.l,'#ff1744']].map(([lbl,val,cor])=>(
-                            <div key={lbl} style={{flex:1,background:'#0a0e1a',borderRadius:7,padding:'5px',textAlign:'center'}}>
-                              <div style={{fontSize:9,color:cor,fontWeight:700}}>{lbl}</div>
-                              <div style={{fontSize:15,fontWeight:900,color:cor}}>{val}</div>
-                            </div>
-                          ))}
+                  {/* Resultado 1X2 */}
+                  <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',gap:8,marginBottom:14,alignItems:'center'}}>
+                    <div style={{textAlign:'center',background:'#0f1320',borderRadius:10,padding:'10px 6px'}}>
+                      <div style={{fontSize:10,color:'#ffab00',fontWeight:700,marginBottom:2}}>{s.homeShort}</div>
+                      <div style={{fontSize:24,fontWeight:900,color:'#ffab00',fontFamily:"'Bebas Neue',cursive"}}>{s.poiss.homeWin}%</div>
+                      <div style={{fontSize:10,color:'#8892a4'}}>Fair: {s.fairHome}</div>
+                      <div style={{fontSize:9,color:'#8892a4'}}>λ={s.lambdaH}</div>
+                    </div>
+                    <div style={{textAlign:'center',background:'#0f1320',borderRadius:10,padding:'10px 8px'}}>
+                      <div style={{fontSize:10,color:'#8892a4',fontWeight:700,marginBottom:2}}>EMPATE</div>
+                      <div style={{fontSize:24,fontWeight:900,color:'#8892a4',fontFamily:"'Bebas Neue',cursive"}}>{s.poiss.draw}%</div>
+                      <div style={{fontSize:10,color:'#8892a4'}}>Fair: {s.fairDraw}</div>
+                    </div>
+                    <div style={{textAlign:'center',background:'#0f1320',borderRadius:10,padding:'10px 6px'}}>
+                      <div style={{fontSize:10,color:'#7c8cff',fontWeight:700,marginBottom:2}}>{s.awayShort}</div>
+                      <div style={{fontSize:24,fontWeight:900,color:'#7c8cff',fontFamily:"'Bebas Neue',cursive"}}>{s.poiss.awayWin}%</div>
+                      <div style={{fontSize:10,color:'#8892a4'}}>Fair: {s.fairAway}</div>
+                      <div style={{fontSize:9,color:'#8892a4'}}>λ={s.lambdaA}</div>
+                    </div>
+                  </div>
+
+                  {/* Over/BTTS row */}
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8}}>
+                    {[
+                      ['Over 1.5',s.poiss.over15,'#00bcd4'],
+                      ['Over 2.5',s.poiss.over25,'#00e676'],
+                      ['Over 3.5',s.poiss.over35,'#ffab00'],
+                      ['BTTS',s.poiss.btts,'#7c8cff'],
+                    ].map(([lbl,prob,cor])=>(
+                      <div key={lbl} style={{background:'#0f1320',borderRadius:8,padding:'8px 6px',textAlign:'center'}}>
+                        <div style={{fontSize:9,color:cor,fontWeight:700,marginBottom:2}}>{lbl}</div>
+                        <div style={{fontSize:18,fontWeight:900,color:cor,fontFamily:"'Bebas Neue',cursive"}}>{prob}%</div>
+                        <div style={{background:'#1e2538',borderRadius:3,height:3,marginTop:4}}>
+                          <div style={{background:cor,borderRadius:3,height:3,width:`${prob}%`}}/>
                         </div>
-                        <div style={{background:'#1e2538',borderRadius:4,height:4}}>
-                          <div style={{background:`linear-gradient(90deg,#00e676,#00c853)`,borderRadius:4,height:4,width:`${Math.round(wr*100)}%`}}/>
-                        </div>
-                        <div style={{fontSize:10,color:'#8892a4',marginTop:4}}>{Math.round(wr*100)}% aproveitamento</div>
                       </div>
                     ))}
                   </div>
 
-                  {/* Mini prob overview */}
-                  <div style={{marginTop:12,display:'flex',gap:8}}>
-                    {[
-                      [s.homeShort,s.homeWinProb,'#ffab00'],
-                      ['Empate',s.drawProb,'#8892a4'],
-                      [s.awayShort,s.awayWinProb,'#7c8cff'],
-                    ].map(([lbl,prob,cor])=>(
-                      <div key={lbl} style={{flex:1,textAlign:'center'}}>
-                        <div style={{fontSize:10,color:'#8892a4',marginBottom:4,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{lbl}</div>
-                        <div style={{fontSize:16,fontWeight:900,color:cor,fontFamily:"'Bebas Neue',cursive"}}>{prob}%</div>
+                  {/* Records dos times */}
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginTop:12}}>
+                    {[[s.homeShort,s.hr,'Casa'],[s.awayShort,s.ar,'Fora']].map(([nome,rec,tipo])=>(
+                      <div key={tipo} style={{display:'flex',gap:6,alignItems:'center',background:'#0f1320',borderRadius:8,padding:'8px 10px'}}>
+                        <span style={{fontSize:10,color:'#8892a4',fontWeight:700,minWidth:30}}>{tipo}</span>
+                        <span style={{fontSize:11,color:'#e8eaf6',fontWeight:700,flex:1}}>{nome}</span>
+                        {[['V',rec.w,'#00e676'],['E',rec.d,'#ffab00'],['D',rec.l,'#ff1744']].map(([l,v,c])=>(
+                          <span key={l} style={{background:c+'22',color:c,borderRadius:5,padding:'1px 6px',fontSize:11,fontWeight:800,minWidth:22,textAlign:'center'}}>{v}</span>
+                        ))}
                       </div>
                     ))}
                   </div>
                 </div>
 
-                {/* Sugestoes */}
+                {/* Sugestoes com fair odd e value */}
                 <div style={{padding:'14px 22px',display:'flex',gap:10,flexWrap:'wrap'}}>
                   {s.bets.map((bet,i)=>(
-                    <div key={i} style={{background:'#0f1320',border:`1px solid ${bet.cor}22`,borderRadius:12,padding:'12px 16px',flex:1,minWidth:160,boxShadow:`0 2px 12px ${bet.cor}08`}}>
+                    <div key={i} style={{background:'#0f1320',border:`1px solid ${bet.cor}22`,borderRadius:12,padding:'12px 16px',flex:1,minWidth:160}}>
                       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
                         <span style={{background:bet.cor+'22',color:bet.cor,borderRadius:5,padding:'2px 7px',fontSize:9,fontWeight:800,letterSpacing:1}}>{bet.icone}</span>
                         <span style={{fontSize:12,fontWeight:700,color:'#e8eaf6'}}>{bet.tipo}</span>
                       </div>
-                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:8}}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:6}}>
                         <div>
-                          <div style={{fontSize:10,color:'#8892a4'}}>PROBABILIDADE</div>
+                          <div style={{fontSize:9,color:'#8892a4'}}>PROBABILIDADE</div>
                           <div style={{fontSize:26,fontWeight:900,color:bet.cor,fontFamily:"'Bebas Neue',cursive",lineHeight:1}}>{bet.prob}%</div>
                         </div>
                         <div style={{textAlign:'right'}}>
-                          <div style={{fontSize:10,color:'#8892a4'}}>ODD MINIMA</div>
-                          <div style={{fontSize:20,fontWeight:800,color:'#ffab00',fontFamily:"'Bebas Neue',cursive",lineHeight:1}}>{bet.oddMin}</div>
+                          <div style={{fontSize:9,color:'#8892a4'}}>FAIR ODD</div>
+                          <div style={{fontSize:20,fontWeight:800,color:'#ffab00',fontFamily:"'Bebas Neue',cursive",lineHeight:1}}>{bet.fairOdd}</div>
                         </div>
                       </div>
-                      <div style={{background:'#1e2538',borderRadius:4,height:4,marginBottom:6}}>
+                      <div style={{background:'#1e2538',borderRadius:4,height:4,marginBottom:8}}>
                         <div style={{background:`linear-gradient(90deg,${bet.cor}88,${bet.cor})`,borderRadius:4,height:4,width:`${bet.prob}%`,boxShadow:`0 0 6px ${bet.cor}55`}}/>
                       </div>
-                      <div style={{fontSize:10,color:'#8892a4'}}>{bet.motivo}</div>
+                      <div style={{fontSize:10,color:'#8892a4',marginBottom:6}}>{bet.motivo}</div>
+                      <div style={{fontSize:10,color:'#a0aec0',padding:'4px 8px',background:'#1a2040',borderRadius:6}}>
+                        Se a casa pagar <strong style={{color:'#00e676'}}>{'>'}{bet.fairOdd}</strong> → <strong style={{color:'#00e676'}}>Value Bet!</strong>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -683,14 +957,15 @@ function SugestoesTab() {
           </div>
 
           <div style={{background:'#ff174411',border:'1px solid #ff174433',borderRadius:12,padding:'14px 18px'}}>
-            <div style={{fontSize:12,color:'#ff7070',fontWeight:700,marginBottom:4}}>Aviso</div>
-            <div style={{fontSize:12,color:'#a0aec0'}}>Sugestoes baseadas em estatisticas historicas ESPN. Nao garantem resultado. Aposte com responsabilidade.</div>
+            <div style={{fontSize:12,color:'#ff7070',fontWeight:700,marginBottom:4}}>Aviso de Responsabilidade</div>
+            <div style={{fontSize:12,color:'#a0aec0'}}>Probabilidades calculadas via modelo Poisson com base em historico de vitórias/empates/derrotas. Nao ha garantia de resultado. Aposte com responsabilidade.</div>
           </div>
         </>
       )}
     </div>
   )
 }
+
 
 // ===================== SCOUTS TAB =====================
 function FormaRecente({ record, cor }) {
@@ -722,9 +997,7 @@ function FormaRecente({ record, cor }) {
 function ScoutCard({ event, ligaNome, onSelect, isSelected }) {
   const [hovered, setHovered] = useState(false)
 
-  const comps = event.competitions?.[0]
-  const home = comps?.competitors?.find(c=>c.homeAway==='home')
-  const away = comps?.competitors?.find(c=>c.homeAway==='away')
+  const { home, away } = getTeamsFromEvent(event)
   if (!home||!away) return null
 
   const status = event.status?.type
@@ -853,7 +1126,7 @@ function ScoutsTab() {
 
   async function buscar() {
     setLoading(true); setSearched(true); setSelected(null)
-    try { const data = await fetchESPN(liga.id, date); setEvents(data) }
+    try { const data = await fetchESPN(liga.id, date); setEvents(data) } // cache automatico
     catch(e) { setEvents([]) }
     setLoading(false)
   }
@@ -1107,7 +1380,7 @@ function Bankroll({ bets, userId }) {
       {stats.emRisco&&<div style={{background:'#ff174422',border:'1px solid #ff174466',borderRadius:14,padding:'16px 20px',display:'flex',alignItems:'center',gap:12}}><span style={{fontSize:24}}>!</span><div><div style={{color:'#ff5252',fontWeight:700,fontSize:15}}>Atencao ao Stop Loss!</div><div style={{color:'#ff7070',fontSize:13,marginTop:2}}>Voce esta proximo ao limite de perda (R$ {stats.stopLossVal.toFixed(2)})</div></div></div>}
       <GlassCard><div style={{fontWeight:700,fontSize:15,marginBottom:20}}>Situacao do Bankroll</div><div style={{display:'flex',gap:14,flexWrap:'wrap'}}><StatCard label="Bankroll Inicial" value={`R$ ${Number(config.bankroll_inicial).toFixed(2)}`} color="#7c8cff"/><StatCard label="Saldo Atual" value={`R$ ${stats.saldoAtual.toFixed(2)}`} color={stats.saldoAtual>=config.bankroll_inicial?'#00e676':'#ff1744'}/><StatCard label="Resultado Total" value={`R$ ${stats.lucroTotal.toFixed(2)}`} color={stats.lucroTotal>=0?'#00e676':'#ff1744'}/><StatCard label="Variacao" value={`${stats.pct}%`} color={parseFloat(stats.pct)>=0?'#00e676':'#ff1744'}/></div></GlassCard>
       {kelly&&<GlassCard glow="#ffab00"><div style={{fontWeight:700,fontSize:15,marginBottom:4}}>Criterio de Kelly</div><div style={{color:'#8892a4',fontSize:12,marginBottom:14}}>Baseado no seu historico</div><div style={{display:'flex',gap:24,flexWrap:'wrap'}}><div><div style={{fontSize:11,color:'#8892a4',marginBottom:4}}>% DO BANKROLL</div><div style={{fontSize:28,fontWeight:900,color:'#ffab00',fontFamily:"'Bebas Neue',cursive"}}>{kelly.kf}%</div></div><div><div style={{fontSize:11,color:'#8892a4',marginBottom:4}}>VALOR SUGERIDO</div><div style={{fontSize:28,fontWeight:900,color:'#ffab00',fontFamily:"'Bebas Neue',cursive"}}>R$ {kelly.val}</div></div></div><div style={{color:'#8892a4',fontSize:11,marginTop:10}}>Sugestao teorica. Nunca aposte mais do que pode perder.</div></GlassCard>}
-      <GlassCard><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}><div style={{fontWeight:700,fontSize:15}}>Configuracoes</div>{!editing&&<button onClick={()=>setEditing(true)} style={{background:'#1e2a4a',border:'1px solid #3d5afe44',color:'#7c8cff',borderRadius:8,padding:'6px 14px',cursor:'pointer',fontSize:12,fontWeight:700}}>Editar</button>}</div>{editing?(<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}}><div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>BANKROLL INICIAL (R$)</label><input type="number" value={form.bankroll_inicial} onChange={e=>setForm(f=>({...f,bankroll_inicial:e.target.value}))} style={inp}/></div><div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>STOP LOSS (%)</label><input type="number" value={form.stop_loss_percent} onChange={e=>setForm(f=>({...f,stop_loss_percent:e.target.value}))} style={inp} min="1" max="100"/></div><div style={{gridColumn:'1 / span 2',display:'flex',gap:10}}><button onClick={()=>setEditing(false)} style={{flex:1,background:'transparent',border:'1px solid #2a3048',color:'#8892a4',borderRadius:9,padding:10,cursor:'pointer'}}>Cancelar</button><button onClick={saveConfig} disabled={saving} style={{flex:2,background:'linear-gradient(135deg,#00c853,#00897b)',border:'none',color:'#fff',borderRadius:9,padding:10,cursor:'pointer',fontWeight:700}}>{saving?'Salvando...':'Salvar'}</button></div></div>):(<div style={{display:'flex',gap:24}}><div><div style={{fontSize:11,color:'#8892a4'}}>BANKROLL INICIAL</div><div style={{fontSize:18,fontWeight:700,marginTop:3}}>R$ {Number(config.bankroll_inicial).toFixed(2)}</div></div><div><div style={{fontSize:11,color:'#8892a4'}}>STOP LOSS</div><div style={{fontSize:18,fontWeight:700,color:'#ff5252',marginTop:3}}>{config.stop_loss_percent}% = R$ {stats.stopLossVal.toFixed(2)}</div></div></div>)}</GlassCard>
+      <GlassCard><div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}><div style={{fontWeight:700,fontSize:15}}>Configuracoes</div>{!editing&&<button onClick={()=>setEditing(true)} style={{background:'#1e2a4a',border:'1px solid #3d5afe44',color:'#7c8cff',borderRadius:8,padding:'6px 14px',cursor:'pointer',fontSize:12,fontWeight:700}}>Editar</button>}</div>{editing?(<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:14}}><div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>BANKROLL INICIAL (R$)</label><input type="number" value={form.bankroll_inicial} onChange={e=>setForm(f=>({...f,bankroll_inicial:e.target.value}))} style={inp}/></div><div><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>STOP LOSS (%)</label><input type="number" value={form.stop_loss_percent} onChange={e=>setForm(f=>({...f,stop_loss_percent:e.target.value}))} style={inp} min="1" max="100"/></div><div style={{gridColumn:'1 / span 2',display:'flex',gap:10}}><button onClick={()=>setEditing(false)} style={{flex:1,background:'transparent',border:'1px solid #2a3048',color:'#8892a4',borderRadius:9,padding:10,cursor:'pointer'}}>Cancelar</button><button onClick={saveConfig} disabled={saving} style={{flex:2,background:'linear-gradient(135deg,#00c853,#00897b)',border:'none',color:'#fff',borderRadius:9,padding:10,cursor:'pointer',fontWeight:700}}>{saving?'Salvando...':'Salvar'}</button></div></div>):(<div style={{display:'flex',gap:24}}><div><div style={{fontSize:11,color:'#8892a4'}}>BANKROLL INICIAL</div><div style={{fontSize:18,fontWeight:700,marginTop:3}}>R$ {Number(config.bankroll_inicial).toFixed(2)}</div></div><div><div style={{fontSize:11,color:'#8892a4'}}>STOP LOSS</div><div style={{fontSize:18,fontWeight:700,color:'#ff5252',marginTop:3}}>{config.stop_loss_percent}% = R$ {stats.stopLossVal.toFixed(2)}</div></div></div>)}</GlassCard>
     </div>
   )
 }
@@ -1115,47 +1388,97 @@ function Bankroll({ bets, userId }) {
 // ===================== BET FORM =====================
 function BetForm({ editData, userId, onSave, onClose }) {
   const [saving, setSaving] = useState(false)
-  const r = { data:useRef(),evento:useRef(),esporte:useRef(),mercado:useRef(),selecao:useRef(),casa:useRef(),tipo:useRef(),odd:useRef(),valor:useRef(),status:useRef(),observacao:useRef() }
+  const [erro, setErro] = useState('')
+  const [form, setForm] = useState({
+    data:       editData?.data      ?? new Date().toISOString().slice(0,10),
+    evento:     editData?.evento    ?? '',
+    esporte:    editData?.esporte   ?? 'Futebol',
+    mercado:    editData?.mercado   ?? '',
+    selecao:    editData?.selecao   ?? '',
+    casa:       editData?.casa      ?? 'Bet365',
+    tipo:       editData?.tipo      ?? 'simples',
+    odd:        editData?.odd       ?? '',
+    valor:      editData?.valor     ?? '',
+    status:     editData?.status    ?? 'pendente',
+    observacao: editData?.observacao?? '',
+  })
+
+  function upd(k,v) { setForm(p=>({...p,[k]:v})) }
+
   function preencherPartida({ evento, esporte, data, mercado }) {
-    if(r.evento.current) r.evento.current.value=evento
-    if(r.esporte.current) r.esporte.current.value=esporte
-    if(r.data.current) r.data.current.value=data
-    if(r.mercado.current) r.mercado.current.value=mercado
+    setForm(p=>({...p,evento,esporte,data,mercado}))
   }
+
+  // Preview do retorno em tempo real
+  const retornoPreview = form.status==='ganhou'
+    ? (safeNum(form.odd)*safeNum(form.valor)).toFixed(2)
+    : form.status==='perdeu' ? '0.00' : (safeNum(form.odd)*safeNum(form.valor)).toFixed(2)
+  const lucroPreview = form.status==='ganhou'
+    ? (safeNum(form.odd)*safeNum(form.valor)-safeNum(form.valor)).toFixed(2)
+    : form.status==='perdeu' ? (-safeNum(form.valor)).toFixed(2)
+    : (safeNum(form.odd)*safeNum(form.valor)-safeNum(form.valor)).toFixed(2)
+
   async function handleSave() {
-    const evento=r.evento.current.value, odd=parseFloat(r.odd.current.value), valor=parseFloat(r.valor.current.value)
-    if(!evento||!odd||!valor) return alert('Preencha Evento, Odd e Valor')
+    setErro('')
+    if (!form.evento) return setErro('Preencha o Evento')
+    if (!safeNum(form.odd)||safeNum(form.odd)<=1) return setErro('Odd deve ser maior que 1')
+    if (!safeNum(form.valor)||safeNum(form.valor)<=0) return setErro('Valor deve ser maior que 0')
     setSaving(true)
-    const status=r.status.current.value
-    const retorno=status==='ganhou'?+(odd*valor).toFixed(2):status==='perdeu'?0:null
-    const payload={data:r.data.current.value,evento,esporte:r.esporte.current.value,mercado:r.mercado.current.value,selecao:r.selecao.current.value,casa:r.casa.current.value,tipo:r.tipo.current.value,odd,valor,status,retorno,observacao:r.observacao.current.value,user_id:userId}
+    const odd=safeNum(form.odd), valor=safeNum(form.valor)
+    const retorno=form.status==='ganhou'?+(odd*valor).toFixed(2):form.status==='perdeu'?0:null
+    const payload={...form,odd,valor,retorno,user_id:userId}
     if(editData?.id) await supabase.from('apostas').update(payload).eq('id',editData.id)
     else await supabase.from('apostas').insert(payload)
-    setSaving(false); onSave()
+    setSaving(false)
+    showToast(editData?.id?'Aposta atualizada!':'Aposta registrada!')
+    onSave()
   }
+
   const lbl=(t)=><label style={{fontSize:11,color:'#8892a4',fontWeight:700,display:'block',marginBottom:5}}>{t}</label>
-  const dv=(k)=>editData?.[k]??''
+
   return (
     <div style={{position:'fixed',inset:0,background:'#000000cc',display:'flex',alignItems:'center',justifyContent:'center',zIndex:999,backdropFilter:'blur(6px)',padding:16}}>
-      <div style={{background:'linear-gradient(135deg,#141928,#1a1f2e)',border:'1px solid #2a3048',borderRadius:20,padding:28,width:'100%',maxWidth:520,maxHeight:'92vh',overflowY:'auto',boxShadow:'0 20px 60px #00000066'}}>
-        <div style={{fontSize:17,fontWeight:800,marginBottom:18}}>{editData?.id?'Editar Aposta':'Nova Aposta'}</div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:13}}>
-          {!editData?.id&&<MatchSearch onSelect={preencherPartida}/>}
-          <div>{lbl('DATA')}<input ref={r.data} type="date" defaultValue={editData?.data??new Date().toISOString().slice(0,10)} style={inp}/></div>
-          <div>{lbl('STATUS')}<select ref={r.status} defaultValue={dv('status')||'pendente'} style={inp}><option>pendente</option><option>ganhou</option><option>perdeu</option></select></div>
-          <div style={{gridColumn:'1 / span 2'}}>{lbl('EVENTO / JOGO')}<input ref={r.evento} type="text" defaultValue={dv('evento')} style={inp}/></div>
-          <div>{lbl('ESPORTE')}<select ref={r.esporte} defaultValue={dv('esporte')||'Futebol'} style={inp}>{ESPORTES.map(o=><option key={o}>{o}</option>)}</select></div>
-          <div>{lbl('CASA DE APOSTAS')}<select ref={r.casa} defaultValue={dv('casa')||'Bet365'} style={inp}>{CASAS.map(o=><option key={o}>{o}</option>)}</select></div>
-          <div>{lbl('TIPO')}<select ref={r.tipo} defaultValue={dv('tipo')||'simples'} style={inp}><option>simples</option><option>multipla</option><option>ao vivo</option></select></div>
-          <div>{lbl('MERCADO')}<input ref={r.mercado} type="text" defaultValue={dv('mercado')} style={inp}/></div>
-          <div>{lbl('SELECAO')}<input ref={r.selecao} type="text" defaultValue={dv('selecao')} style={inp}/></div>
-          <div>{lbl('ODD')}<input ref={r.odd} type="number" step="0.01" min="1.01" defaultValue={dv('odd')} style={inp}/></div>
-          <div>{lbl('VALOR (R$)')}<input ref={r.valor} type="number" step="0.01" min="0.01" defaultValue={dv('valor')} style={inp}/></div>
-          <div style={{gridColumn:'1 / span 2'}}>{lbl('OBSERVACAO')}<input ref={r.observacao} type="text" defaultValue={dv('observacao')} style={inp}/></div>
+      <div style={{background:'linear-gradient(135deg,#141928,#1a1f2e)',border:'1px solid #2a3048',borderRadius:20,padding:28,width:'100%',maxWidth:540,maxHeight:'92vh',overflowY:'auto',boxShadow:'0 20px 60px #00000066'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}}>
+          <div style={{fontSize:17,fontWeight:800}}>{editData?.id?'Editar Aposta':'Nova Aposta'}</div>
+          <button onClick={onClose} style={{background:'transparent',border:'none',color:'#8892a4',cursor:'pointer',fontSize:20,lineHeight:1}}>×</button>
         </div>
-        <div style={{display:'flex',gap:10,marginTop:22}}>
+
+        {!editData?.id&&<MatchSearch onSelect={preencherPartida}/>}
+
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:13,marginTop:12}}>
+          <div>{lbl('DATA')}<input type="date" value={form.data} onChange={e=>upd('data',e.target.value)} style={inp}/></div>
+          <div>{lbl('STATUS')}<select value={form.status} onChange={e=>upd('status',e.target.value)} style={inp}><option>pendente</option><option>ganhou</option><option>perdeu</option></select></div>
+          <div style={{gridColumn:'1 / -1'}}>{lbl('EVENTO / JOGO')}<input type="text" value={form.evento} onChange={e=>upd('evento',e.target.value)} placeholder="Ex: Flamengo x Palmeiras" style={inp}/></div>
+          <div>{lbl('ESPORTE')}<select value={form.esporte} onChange={e=>upd('esporte',e.target.value)} style={inp}>{ESPORTES.map(o=><option key={o}>{o}</option>)}</select></div>
+          <div>{lbl('CASA')}<select value={form.casa} onChange={e=>upd('casa',e.target.value)} style={inp}>{CASAS.map(o=><option key={o}>{o}</option>)}</select></div>
+          <div>{lbl('TIPO')}<select value={form.tipo} onChange={e=>upd('tipo',e.target.value)} style={inp}><option>simples</option><option>multipla</option><option>ao vivo</option></select></div>
+          <div>{lbl('MERCADO')}<input type="text" value={form.mercado} onChange={e=>upd('mercado',e.target.value)} placeholder="Ex: Over 2.5" style={inp}/></div>
+          <div style={{gridColumn:'1 / -1'}}>{lbl('SELECAO')}<input type="text" value={form.selecao} onChange={e=>upd('selecao',e.target.value)} placeholder="Ex: Flamengo vence" style={inp}/></div>
+          <div>{lbl('ODD')}<input type="number" step="0.01" min="1.01" value={form.odd} onChange={e=>upd('odd',e.target.value)} style={{...inp,color:'#ffab00',fontWeight:700,fontSize:16}}/></div>
+          <div>{lbl('VALOR (R$)')}<input type="number" step="0.01" min="0.01" value={form.valor} onChange={e=>upd('valor',e.target.value)} style={inp}/></div>
+          <div style={{gridColumn:'1 / -1'}}>{lbl('OBSERVACAO')}<input type="text" value={form.observacao} onChange={e=>upd('observacao',e.target.value)} style={inp}/></div>
+        </div>
+
+        {/* Preview de retorno */}
+        {safeNum(form.odd)>1&&safeNum(form.valor)>0&&(
+          <div style={{marginTop:14,padding:'12px 16px',background:'#1a2040',border:'1px solid #3d5afe33',borderRadius:10,display:'flex',gap:20,alignItems:'center'}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:10,color:'#8892a4',fontWeight:700}}>RETORNO POTENCIAL</div>
+              <div style={{fontSize:20,fontWeight:900,color:'#7c8cff',fontFamily:"'Bebas Neue',cursive"}}>R$ {retornoPreview}</div>
+            </div>
+            <div style={{flex:1}}>
+              <div style={{fontSize:10,color:'#8892a4',fontWeight:700}}>LUCRO POTENCIAL</div>
+              <div style={{fontSize:20,fontWeight:900,color:safeNum(lucroPreview)>=0?'#00e676':'#ff5252',fontFamily:"'Bebas Neue',cursive"}}>R$ {lucroPreview}</div>
+            </div>
+          </div>
+        )}
+
+        {erro&&<div style={{marginTop:10,color:'#ff7070',fontSize:12,padding:'8px 12px',background:'#ff174411',borderRadius:8,fontWeight:600}}>{erro}</div>}
+
+        <div style={{display:'flex',gap:10,marginTop:18}}>
           <button onClick={onClose} style={{flex:1,background:'transparent',border:'1px solid #2a3048',color:'#8892a4',borderRadius:10,padding:12,cursor:'pointer',fontWeight:600}}>Cancelar</button>
-          <button onClick={handleSave} disabled={saving} style={{flex:2,background:saving?'#1e2538':'linear-gradient(135deg,#00c853,#00897b)',border:'none',color:'#fff',borderRadius:10,padding:12,cursor:'pointer',fontWeight:700,fontSize:15,boxShadow:saving?'none':'0 4px 16px #00c85344'}}>{saving?'Salvando...':'Salvar Aposta'}</button>
+          <button onClick={handleSave} disabled={saving} style={{flex:2,background:saving?'#1e2538':'linear-gradient(135deg,#00c853,#00897b)',border:'none',color:'#fff',borderRadius:10,padding:12,cursor:'pointer',fontWeight:700,fontSize:14,opacity:saving?0.7:1,transition:'all 0.2s'}}>{saving?'Salvando...':'Salvar Aposta'}</button>
         </div>
       </div>
     </div>
@@ -1170,10 +1493,89 @@ function ApostasTab({ bets, userId, onRefresh }) {
   const [sortDir, setSortDir] = useState('desc')
   const [showForm, setShowForm] = useState(false)
   const [editData, setEditData] = useState(null)
-  async function updateStatus(id,status) { const bet=bets.find(b=>b.id===id); const retorno=status==='ganhou'?+(bet.odd*bet.valor).toFixed(2):0; await supabase.from('apostas').update({status,retorno}).eq('id',id); onRefresh() }
-  async function deleteBet(id) { if(!confirm('Excluir esta aposta?')) return; await supabase.from('apostas').delete().eq('id',id); onRefresh() }
-  const counts = useMemo(()=>({todos:bets.length,pendente:bets.filter(b=>b.status==='pendente').length,ganhou:bets.filter(b=>b.status==='ganhou').length,perdeu:bets.filter(b=>b.status==='perdeu').length}),[bets])
-  const filtered = useMemo(()=>{ let list=filter==='todos'?bets:bets.filter(b=>b.status===filter); if(search) list=list.filter(b=>b.evento?.toLowerCase().includes(search.toLowerCase())||b.selecao?.toLowerCase().includes(search.toLowerCase())||b.casa?.toLowerCase().includes(search.toLowerCase())); return [...list].sort((a,b)=>{ let av=a[sortField],bv=b[sortField]; if(typeof av==='string') return sortDir==='asc'?av.localeCompare(bv):bv.localeCompare(av); return sortDir==='asc'?av-bv:bv-av }) },[bets,filter,search,sortField,sortDir])
+  const [localBets, setLocalBets] = useState(bets)
+  const [verificando, setVerificando] = useState(false)
+  const [verificMsg, setVerificMsg] = useState('')
+
+  useEffect(() => { setLocalBets(bets) }, [bets])
+
+  // Atualização otimista — UI instantânea, sync com Supabase em background
+  async function updateStatus(id, status) {
+    const bet = localBets.find(b => b.id === id)
+    if (!bet) return
+    const odd = safeNum(bet.odd); const valor = safeNum(bet.valor)
+    const retorno = status === 'ganhou' ? +(odd * valor).toFixed(2) : 0
+    // Atualiza local primeiro (sem esperar Supabase)
+    setLocalBets(prev => prev.map(b => b.id===id ? {...b, status, retorno} : b))
+    // Sync em background
+    await supabase.from('apostas').update({status, retorno}).eq('id', id)
+    onRefresh()
+  }
+
+  async function deleteBet(id) {
+    if (!confirm('Excluir esta aposta?')) return
+    setLocalBets(prev => prev.filter(b => b.id !== id))
+    await supabase.from('apostas').delete().eq('id', id)
+    showToast('Aposta excluida', 'error')
+    onRefresh()
+  }
+
+  // Verificação automática de resultados via ESPN
+  async function verificarResultados() {
+    setVerificando(true); setVerificMsg('')
+    const pendentes = localBets.filter(b => b.status === 'pendente' && b.data <= new Date().toISOString().slice(0,10))
+    if (pendentes.length === 0) { setVerificMsg('Nenhuma aposta pendente para verificar.'); setVerificando(false); return }
+    let atualizadas = 0
+    for (const bet of pendentes) {
+      try {
+        // Busca jogos do dia da aposta nas ligas ESPN
+        const ligas = ['bra.1','bra.2','bra.3','conmebol.libertadores','uefa.champions','eng.1','esp.1','ita.1','ger.1']
+        for (const liga of ligas) {
+          const events = await fetchESPN(liga, bet.data)
+          const termos = bet.evento?.toLowerCase().split(/\s+x\s+|\s+vs\s+/) || []
+          const match = events.find(ev => {
+            const comps = ev.competitions?.[0]?.competitors || []
+            return termos.some(t => comps.some(c => c.team?.displayName?.toLowerCase().includes(t?.trim())))
+          })
+          if (match && match.status?.type?.completed) {
+            const comps = match.competitions?.[0]?.competitors || []
+            const home = comps.find(c=>c.homeAway==='home')
+            const away = comps.find(c=>c.homeAway==='away')
+            const hScore = parseInt(home?.score||0)
+            const aScore = parseInt(away?.score||0)
+            const totalGols = hScore + aScore
+            const sel = bet.selecao?.toLowerCase() || ''
+            let novoStatus = null
+            if (sel.includes('over 2.5')) novoStatus = totalGols > 2 ? 'ganhou' : 'perdeu'
+            else if (sel.includes('over 1.5')) novoStatus = totalGols > 1 ? 'ganhou' : 'perdeu'
+            else if (sel.includes('ambas')) novoStatus = hScore>0 && aScore>0 ? 'ganhou' : 'perdeu'
+            else if (sel.includes(home?.team?.displayName?.toLowerCase()||'casa')) novoStatus = hScore>aScore?'ganhou':'perdeu'
+            else if (sel.includes(away?.team?.displayName?.toLowerCase()||'fora')) novoStatus = aScore>hScore?'ganhou':'perdeu'
+            if (novoStatus) {
+              const placar = `${home?.team?.shortDisplayName||'Casa'} ${hScore}-${aScore} ${away?.team?.shortDisplayName||'Fora'}`
+              const obsBase = (bet.observacao||'').replace(/\s*\|?\s*Resultado:[^|]*/g,'').trim()
+              const novaObs = (obsBase ? obsBase + ' | ' : '') + `Resultado: ${placar}`
+              // Optimistic local update com placar
+              setLocalBets(prev => prev.map(b => b.id===bet.id
+                ? {...b, status:novoStatus, retorno:novoStatus==='ganhou'?+(bet.odd*bet.valor).toFixed(2):0, observacao:novaObs}
+                : b))
+              // Persiste no Supabase
+              await supabase.from('apostas').update({
+                status: novoStatus,
+                retorno: novoStatus==='ganhou' ? +(bet.odd*bet.valor).toFixed(2) : 0,
+                observacao: novaObs
+              }).eq('id', bet.id)
+              atualizadas++; break
+            }
+          }
+        }
+      } catch(e) {}
+    }
+    setVerificMsg(atualizadas > 0 ? `${atualizadas} aposta(s) atualizada(s) automaticamente!` : 'Nenhum resultado encontrado via ESPN. Atualize manualmente.')
+    setVerificando(false)
+  }
+  const counts = useMemo(()=>({todos:localBets.length,pendente:localBets.filter(b=>b.status==='pendente').length,ganhou:localBets.filter(b=>b.status==='ganhou').length,perdeu:localBets.filter(b=>b.status==='perdeu').length}),[localBets])
+  const filtered = useMemo(()=>{ let list=filter==='todos'?localBets:localBets.filter(b=>b.status===filter); if(search) list=list.filter(b=>b.evento?.toLowerCase().includes(search.toLowerCase())||b.selecao?.toLowerCase().includes(search.toLowerCase())||b.casa?.toLowerCase().includes(search.toLowerCase())); return [...list].sort((a,b)=>{ let av=a[sortField],bv=b[sortField]; if(typeof av==='string') return sortDir==='asc'?av.localeCompare(bv):bv.localeCompare(av); return sortDir==='asc'?av-bv:bv-av }) },[localBets,filter,search,sortField,sortDir])
   function hs(f){if(sortField===f) setSortDir(d=>d==='asc'?'desc':'asc'); else{setSortField(f);setSortDir('desc')}}
   return (
     <>
@@ -1183,7 +1585,11 @@ function ApostasTab({ bets, userId, onRefresh }) {
         ))}
         <input placeholder="Buscar..." value={search} onChange={e=>setSearch(e.target.value)} style={{...inp,width:180,marginLeft:'auto'}}/>
         <button onClick={()=>exportCSV(filtered)} style={{background:'#1a2030',border:'1px solid #2a3048',color:'#8892a4',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontSize:12,fontWeight:600,whiteSpace:'nowrap'}}>Exportar CSV</button>
+        <button onClick={verificarResultados} disabled={verificando} style={{background:verificando?'#1a2030':'#1a2a1a',border:'1px solid #00e67644',color:'#00e676',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontSize:12,fontWeight:700,whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:5}}>
+          {verificando ? '⏳ Verificando...' : '🔍 Verificar Resultados'}
+        </button>
       </div>
+      {verificMsg && <div style={{marginBottom:12,padding:'9px 14px',background:verificMsg.includes('atualizada')?'#00e67611':'#ffab0011',border:`1px solid ${verificMsg.includes('atualizada')?'#00e67633':'#ffab0033'}`,borderRadius:8,fontSize:12,color:verificMsg.includes('atualizada')?'#00e676':'#ffab00',fontWeight:600}}>{verificMsg}</div>}
       <div style={{background:'#111724',borderRadius:16,border:'1px solid #1e2538',overflowX:'auto'}}>
         <table style={{width:'100%',borderCollapse:'collapse',minWidth:820}}>
           <thead>
@@ -1199,13 +1605,22 @@ function ApostasTab({ bets, userId, onRefresh }) {
             {filtered.map((bet,i)=>(
               <tr key={bet.id} style={{borderBottom:'1px solid #1a2030',background:i%2===0?'transparent':'#0a0d18'}}>
                 <td style={{padding:'12px 14px',fontSize:12,color:'#8892a4'}}>{bet.data}</td>
-                <td style={{padding:'12px 14px',fontSize:13,fontWeight:600}}>{bet.evento}<div style={{fontSize:11,color:'#7c8cff'}}>{bet.selecao}</div>{bet.mercado&&<div style={{fontSize:10,color:'#8892a4'}}>{bet.mercado}</div>}</td>
+                <td style={{padding:'12px 14px',fontSize:13,fontWeight:600}}>
+                  {bet.evento}
+                  <div style={{fontSize:11,color:'#7c8cff'}}>{bet.selecao}</div>
+                  {bet.mercado&&<div style={{fontSize:10,color:'#8892a4'}}>{bet.mercado}</div>}
+                  {bet.observacao?.includes('Resultado:')&&(
+                    <div style={{fontSize:11,fontWeight:700,marginTop:3,color:bet.status==='ganhou'?'#00e676':'#ff5252',background:bet.status==='ganhou'?'#00e67611':'#ff174411',border:`1px solid ${bet.status==='ganhou'?'#00e67633':'#ff174433'}`,borderRadius:5,padding:'1px 7px',display:'inline-block'}}>
+                      ⚽ {bet.observacao.match(/Resultado: ([^|]+)/)?.[1]?.trim()}
+                    </div>
+                  )}
+                </td>
                 <td style={{padding:'12px 14px',fontSize:12,color:'#a0aec0'}}>{bet.esporte||'-'}</td>
                 <td style={{padding:'12px 14px',fontSize:12,color:'#a0aec0'}}>{bet.casa||'-'}</td>
-                <td style={{padding:'12px 14px',fontSize:13,fontWeight:700,color:'#ffab00'}}>{Number(bet.odd).toFixed(2)}</td>
-                <td style={{padding:'12px 14px',fontSize:13}}>R$ {Number(bet.valor).toFixed(2)}</td>
+                <td style={{padding:'12px 14px',fontSize:13,fontWeight:700,color:'#ffab00'}}>{toOdd(bet.odd)}</td>
+                <td style={{padding:'12px 14px',fontSize:13}}>R$ {toMoney(bet.valor)}</td>
                 <td style={{padding:'12px 14px'}}>{bet.status==='pendente'?<div style={{display:'flex',gap:5}}><button onClick={()=>updateStatus(bet.id,'ganhou')} style={{background:'#00e67622',border:'1px solid #00e67644',color:'#00e676',borderRadius:6,padding:'3px 8px',cursor:'pointer',fontSize:11,fontWeight:700}}>V</button><button onClick={()=>updateStatus(bet.id,'perdeu')} style={{background:'#ff174422',border:'1px solid #ff174444',color:'#ff1744',borderRadius:6,padding:'3px 8px',cursor:'pointer',fontSize:11,fontWeight:700}}>X</button></div>:<Badge status={bet.status}/>}</td>
-                <td style={{padding:'12px 14px',fontSize:13,fontWeight:700,color:bet.retorno===null?'#8892a4':bet.retorno>0?'#00e676':'#ff1744'}}>{bet.retorno===null?'-':`R$ ${Number(bet.retorno).toFixed(2)}`}</td>
+                <td style={{padding:'12px 14px',fontSize:13,fontWeight:700,color:bet.retorno==null?'#8892a4':safeNum(bet.retorno)>0?'#00e676':'#ff1744'}}>{bet.retorno==null?'-':`R$ ${toMoney(bet.retorno)}`}</td>
                 <td style={{padding:'12px 14px'}}><div style={{display:'flex',gap:5}}><button onClick={()=>{setEditData(bet);setShowForm(true)}} style={{background:'#1e2a4a',border:'1px solid #3d5afe44',color:'#7c8cff',borderRadius:6,padding:'4px 9px',cursor:'pointer',fontSize:12}}>E</button><button onClick={()=>deleteBet(bet.id)} style={{background:'#2a1a1f',border:'1px solid #ff174433',color:'#ff5252',borderRadius:6,padding:'4px 9px',cursor:'pointer',fontSize:12}}>D</button></div></td>
               </tr>
             ))}
@@ -1230,6 +1645,7 @@ function BetApp({ user }) {
 
   return (
     <div style={{minHeight:'100vh',background:'#0b0e1a',color:'#e8eaf6',fontFamily:"'DM Sans',sans-serif"}}>
+      <div id="bc-toast" style={{position:'fixed',bottom:24,left:'50%',transform:'translateX(-50%) translateY(10px)',padding:'10px 22px',borderRadius:10,border:'1px solid',fontSize:13,fontWeight:700,zIndex:9999,opacity:0,transition:'all 0.3s',pointerEvents:'none',backdropFilter:'blur(8px)'}}/>
       <div style={{background:'linear-gradient(180deg,#0f1320,#0b0e1a)',borderBottom:'1px solid #1e2538',padding:'14px 20px',display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,zIndex:100,backdropFilter:'blur(10px)'}}>
         <div style={{display:'flex',alignItems:'center',gap:12}}>
           <div style={{width:38,height:38,background:'linear-gradient(135deg,#00c853,#00897b)',borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,fontWeight:900,color:'#fff',boxShadow:'0 4px 16px #00c85344'}}>B</div>
