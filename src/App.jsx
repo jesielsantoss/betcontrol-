@@ -200,6 +200,17 @@ function showToast(msg, type = 'success') {
   _toastTimer = setTimeout(() => { el.style.opacity = '0'; el.style.transform = 'translateX(-50%) translateY(10px)' }, 3000)
 }
 
+// ===================== FETCH SEGURO =====================
+async function safeFetch(url) {
+  const res = await fetch(url)
+  const text = await res.text()
+  if (text.trim().startsWith('<')) {
+    throw new Error(`A rota ${url.split('?')[0]} retornou HTML em vez de JSON. Verifique o backend/proxy no Vercel.`)
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`)
+  return JSON.parse(text)
+}
+
 // ===================== ESPN SERVICE =====================
 const espnCache = {}
 
@@ -419,8 +430,7 @@ function ComparadorTab() {
   async function testarAPI() {
     setTestando(true); setTesteResult(null)
     try {
-      const res  = await fetch('/api/odds?endpoint=sports')
-      const data = await res.json()
+      const data = await safeFetch('/api/odds?endpoint=sports')
       if (data.error) setTesteResult({ ok: false, msg: data.error })
       else setTesteResult({ ok: true, msg: `API funcionando! ${Array.isArray(data) ? data.length : '?'} esportes disponíveis.` })
     } catch (e) { setTesteResult({ ok: false, msg: e.message }) }
@@ -431,8 +441,7 @@ function ComparadorTab() {
     if (!busca.trim()) return
     setLoadingEventos(true); setErro(''); setEventos([]); setEventoSel(null); setOddsData(null)
     try {
-      const res  = await fetch('/api/odds?endpoint=events&sport=football&limit=100')
-      const data = await res.json()
+      const data = await safeFetch('/api/odds?endpoint=events&sport=football&limit=100')
       if (data.error) { setErro(data.error); setLoadingEventos(false); return }
       const lista    = Array.isArray(data) ? data : (data.events || data.data || [])
       const termo    = busca.toLowerCase()
@@ -451,8 +460,7 @@ function ComparadorTab() {
   async function buscarOdds(event) {
     setEventoSel(event); setLoadingOdds(true); setOddsData(null); setErro('')
     try {
-      const res  = await fetch(`/api/odds?endpoint=odds&eventId=${event.id}`)
-      const data = await res.json()
+      const data = await safeFetch(`/api/odds?endpoint=odds&eventId=${event.id}`)
       if (data.error) { setErro(data.error); setLoadingOdds(false); return }
       setOddsData(data)
       const bms   = data.bookmakers || {}
