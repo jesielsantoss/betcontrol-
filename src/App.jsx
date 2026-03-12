@@ -242,6 +242,153 @@ async function fetchESPNRange(leagueId, days = 7) {
   return results.flat()
 }
 
+// ===================== FOTMOB SERVICE =====================
+// FotMob tem dados muito mais ricos que ESPN: xG, stats, escalações, ao vivo
+// Proxy Vercel em /api/fotmob resolve CORS
+
+// IDs das ligas no FotMob (mais completo que ESPN para futebol)
+const FOTMOB_LEAGUES = {
+  'bra.1':                 { id: 268,  nome: 'Brasileirao Serie A'  },
+  'bra.2':                 { id: 269,  nome: 'Brasileirao Serie B'  },
+  'conmebol.libertadores': { id: 384,  nome: 'Libertadores'         },
+  'conmebol.sudamericana': { id: 480,  nome: 'Sul-Americana'        },
+  'uefa.champions':        { id: 42,   nome: 'Champions League'     },
+  'eng.1':                 { id: 47,   nome: 'Premier League'       },
+  'esp.1':                 { id: 87,   nome: 'La Liga'              },
+  'ita.1':                 { id: 55,   nome: 'Serie A Italia'       },
+  'ger.1':                 { id: 54,   nome: 'Bundesliga'           },
+  'fra.1':                 { id: 53,   nome: 'Ligue 1'              },
+}
+
+// Cache FotMob separado do ESPN
+const fotmobCache = {}
+
+async function fetchFotMobDay(date) {
+  if (fotmobCache[date]) return fotmobCache[date]
+  try {
+    const data = await safeFetch(`/api/fotmob?endpoint=matches&date=${date}`)
+    fotmobCache[date] = data
+    return data
+  } catch (e) {
+    console.warn('FotMob fetch error:', date, e.message)
+    return null
+  }
+}
+
+// Busca jogos de uma liga específica para uma data via FotMob
+async function fetchFotMobLeague(espnLeagueId, date) {
+  const league = FOTMOB_LEAGUES[espnLeagueId]
+  if (!league) return []
+  try {
+    const dayData = await fetchFotMobDay(date)
+    if (!dayData?.leagues) return []
+    const liga = dayData.leagues.find(l => l.id === league.id)
+    if (!liga) return []
+    return (liga.matches || []).map(m => ({ ...m, _ligaNome: league.nome, _espnId: espnLeagueId }))
+  } catch { return [] }
+}
+
+// Busca detalhes de uma partida FotMob (xG, stats, escalação)
+async function fetchFotMobDetails(matchId) {
+  try {
+    return await safeFetch(`/api/fotmob?endpoint=details&matchId=${matchId}`)
+  } catch (e) {
+    console.warn('FotMob details error:', matchId, e.message)
+    return null
+  }
+}
+
+// Extrai lambdas melhores a partir de xG do FotMob (quando disponível)
+// xG é muito mais preciso que W/D/L para o modelo Poisson
+function lambdasFromFotMob(match) {
+  const home = match?.home
+  const away = match?.away
+  // Se tiver xG dos últimos jogos (stats season)
+  const hXg = home?.stats?.seasonXg || home?.expectedGoals || null
+  const aXg = away?.stats?.seasonXg || away?.expectedGoals || null
+  if (hXg && aXg) {
+    return { lambdaH: Math.max(0.3, Math.min(3.5, hXg)), lambdaA: Math.max(0.3, Math.min(3.5, aXg)), source: 'xG' }
+  }
+  return null
+}
+
+// ===================== UNDERSTAT SERVICE =====================
+// Understat: xG (Expected Goals) das top 5 ligas europeias + Rússia
+// ⚠️  Brasil NÃO está disponível — fallback automático para W/D/L
+// Mapeamento: eng.1→EPL | esp.1→La_liga | ger.1→Bundesliga | ita.1→Serie_A | fra.1→Ligue_1
+
+const ESPN_TO_UNDERSTAT = {
+  'eng.1': 'EPL', 'esp.1': 'La_liga', 'ger.1': 'Bundesliga',
+  'ita.1': 'Serie_A', 'fra.1': 'Ligue_1',
+}
+
+// Cache xG por liga — evita refetch durante a sessão
+const understatCache = {}
+
+async function fetchUnderstatLeague(espnLeagueId, season = '2024') {
+  const leagueName = ESPN_TO_UNDERSTAT[espnLeagueId]
+  if (!leagueName) return null  // Liga sem suporte (ex: Brasil)
+
+  const key = `${leagueName}_${season}`
+  if (understatCache[key]) return understatCache[key]
+
+  try {
+    const data = await safeFetch(`/api/understat?endpoint=league&espnId=${espnLeagueId}&season=${season}`)
+    understatCache[key] = data
+    return data
+  } catch (e) {
+    console.warn('Understat unavailable, using W/D/L fallback:', e.message)
+    return null
+  }
+}
+
+// Acha o xG de um time dentro dos dados da liga
+// Matching por nome — FotMob e Understat usam nomes parecidos mas não idênticos
+function findTeamXg(understatData, teamName) {
+  if (!understatData?.times || !teamName) return null
+  const name = teamName.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const match = Object.entries(understatData.times).find(([k]) => {
+    const k2 = k.toLowerCase().replace(/[^a-z0-9]/g, '')
+    return k2 === name || k2.includes(name.slice(0,6)) || name.includes(k2.slice(0,6))
+  })
+  return match ? match[1] : null
+}
+
+// Calcula lambdas usando xG quando disponível, senão W/D/L
+// xG é muito mais preciso: elimina variância de gols "de sorte"
+function calcLambdas(homeTeamName, awayTeamName, hr, ar, understatData) {
+  const homeXg = findTeamXg(understatData, homeTeamName)
+  const awayXg = findTeamXg(understatData, awayTeamName)
+
+  if (homeXg && awayXg) {
+    // Lambda = xG médio de ataque vs xGA médio do adversário
+    // Blend 60% últimos 10 jogos + 40% temporada inteira para suavizar
+    const hAtk = homeXg.xgFor     * 0.6 + homeXg.xgForSeason     * 0.4
+    const hDef = homeXg.xgAgainst * 0.6 + homeXg.xgAgainstSeason * 0.4
+    const aAtk = awayXg.xgFor     * 0.6 + awayXg.xgForSeason     * 0.4
+    const aDef = awayXg.xgAgainst * 0.6 + awayXg.xgAgainstSeason * 0.4
+
+    // Lambda do time da casa = ataque deles vs defesa adversária (ajuste de mando)
+    const lambdaH = Math.max(0.3, Math.min(4.0, (hAtk + aDef) / 2 * 1.08))  // +8% vantagem de mando
+    const lambdaA = Math.max(0.3, Math.min(4.0, (aAtk + hDef) / 2 * 0.94))  // -6% desvantagem fora
+
+    return { lambdaH: +lambdaH.toFixed(3), lambdaA: +lambdaA.toFixed(3), source: 'xG⚡' }
+  }
+
+  // Fallback: estimativa por W/D/L (método original)
+  const LEAGUE_AVG = 1.35
+  const homeAtk = hr.total > 0 ? ((hr.w * 3 + hr.d) / (hr.total * 3)) * LEAGUE_AVG * 1.35 : LEAGUE_AVG
+  const awayAtk = ar.total > 0 ? ((ar.w * 3 + ar.d) / (ar.total * 3)) * LEAGUE_AVG * 1.10 : LEAGUE_AVG
+  const homeDef = hr.total > 0 ? Math.max(0.5, 1 - hr.l / hr.total) : 1
+  const awayDef = ar.total > 0 ? Math.max(0.5, 1 - ar.l / ar.total) : 1
+
+  return {
+    lambdaH: +Math.max(0.3, Math.min(3.5, homeAtk * awayDef)).toFixed(3),
+    lambdaA: +Math.max(0.3, Math.min(3.5, awayAtk * homeDef)).toFixed(3),
+    source: 'W/D/L',
+  }
+}
+
 // ===================== NORMALIZA ODDS =====================
 function normalizeOdds(bookmakers) {
   const markets = {}
@@ -692,35 +839,65 @@ function poissonModel(lambdaHome, lambdaAway, maxGoals = 8) {
 
 // ===================== SUGESTÕES TAB =====================
 function SugestoesTab() {
-  const [liga,      setLiga]      = useState(LIGAS_ESPN[0])
-  const [loading,   setLoading]   = useState(false)
-  const [sugestoes, setSugestoes] = useState([])
-  const [searched,  setSearched]  = useState(false)
-  const [filtro,    setFiltro]    = useState('todos')
+  const [liga,          setLiga]         = useState(LIGAS_ESPN[0])
+  const [loading,       setLoading]       = useState(false)
+  const [sugestoes,     setSugestoes]     = useState([])
+  const [searched,      setSearched]      = useState(false)
+  const [filtro,        setFiltro]        = useState('todos')
+  const [fonte,         setFonte]         = useState('')
+  const [xgStatus,      setXgStatus]      = useState('')  // 'xG⚡' | 'W/D/L' | ''
 
-  const LEAGUE_AVG = 1.35
-
-  function buildLambdas(hr, ar) {
-    const homeAtk = hr.total > 0 ? ((hr.w * 3 + hr.d) / (hr.total * 3)) * LEAGUE_AVG * 1.35 : LEAGUE_AVG
-    const awayAtk = ar.total > 0 ? ((ar.w * 3 + ar.d) / (ar.total * 3)) * LEAGUE_AVG * 1.10 : LEAGUE_AVG
-    const homeDef = hr.total > 0 ? Math.max(0.5, 1 - hr.l / hr.total) : 1
-    const awayDef = ar.total > 0 ? Math.max(0.5, 1 - ar.l / ar.total) : 1
-    return {
-      lambdaH: +(homeAtk * awayDef).toFixed(3),
-      lambdaA: +(awayAtk * homeDef).toFixed(3),
-    }
-  }
+  // buildLambdas → usa calcLambdas global (suporta xG do Understat)
 
   async function buscarSugestoes() {
     setLoading(true); setSearched(true); setSugestoes([])
+    setFonte('...')
     try {
       const hoje  = new Date()
       const dates = Array.from({ length: 7 }, (_, i) => {
         const d = new Date(hoje); d.setDate(d.getDate() + i)
         return d.toISOString().slice(0, 10)
       })
-      const results = await Promise.all(dates.map(date => fetchESPN(liga.id, date).then(evs => evs.map(e => ({ ...e, _date: date })))))
-      const todos   = results.flat().filter(e => !e.status?.type?.completed)
+
+      // Tenta FotMob primeiro (dados mais ricos com xG)
+      let todos = []
+      let fonteUsada = 'ESPN'
+      try {
+        const fotmobResults = await Promise.all(dates.map(date => fetchFotMobLeague(liga.id, date)))
+        const fotmobMatches = fotmobResults.flat()
+        if (fotmobMatches.length > 0) {
+          // Adapta formato FotMob para o formato ESPN-like que o código espera
+          todos = fotmobMatches
+            .filter(m => !m.status?.finished && !m.status?.started)
+            .map(m => ({
+              id: m.id,
+              _fotmob: m,   // guarda original para extrair xG depois
+              _date: dates[0],
+              date: m.status?.utcTime,
+              status: { type: { completed: m.status?.finished, name: m.status?.started ? 'STATUS_IN_PROGRESS' : 'STATUS_SCHEDULED' } },
+              competitions: [{
+                competitors: [
+                  { homeAway: 'home', team: { displayName: m.home?.name, shortDisplayName: m.home?.shortName, logo: `https://images.fotmob.com/image_resources/logo/teamlogo/${m.home?.id}_small.png` }, records: [{ summary: m.home?.stats?.seasonRecord || null }] },
+                  { homeAway: 'away', team: { displayName: m.away?.name, shortDisplayName: m.away?.shortName, logo: `https://images.fotmob.com/image_resources/logo/teamlogo/${m.away?.id}_small.png` }, records: [{ summary: m.away?.stats?.seasonRecord || null }] },
+                ]
+              }]
+            }))
+          if (todos.length > 0) fonteUsada = 'FotMob ⚡'
+        }
+      } catch (e) { console.warn('FotMob fallback para ESPN:', e.message) }
+
+      // Fallback ESPN se FotMob falhou ou retornou vazio
+      if (todos.length === 0) {
+        const results = await Promise.all(dates.map(date => fetchESPN(liga.id, date).then(evs => evs.map(e => ({ ...e, _date: date })))))
+        todos = results.flat().filter(e => !e.status?.type?.completed)
+        fonteUsada = 'ESPN'
+      }
+      setFonte(fonteUsada)
+
+      // Busca xG do Understat em paralelo (só para ligas europeias)
+      // Não bloqueia — se falhar usa W/D/L silenciosamente
+      const understatData = await fetchUnderstatLeague(liga.id)
+      setXgStatus(understatData ? 'xG⚡' : 'W/D/L')
 
       const cards = []
       for (const event of todos.slice(0, 30)) {
@@ -729,7 +906,9 @@ function SugestoesTab() {
 
         const hr = parseRecord(home?.records?.[0]?.summary)
         const ar = parseRecord(away?.records?.[0]?.summary)
-        const { lambdaH, lambdaA } = buildLambdas(hr, ar)
+        const { lambdaH, lambdaA, source: lambdaSource } = calcLambdas(
+          home?.team?.displayName, away?.team?.displayName, hr, ar, understatData
+        )
         const poiss = poissonModel(lambdaH, lambdaA)
 
         const hora          = new Date(event.date).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
@@ -774,7 +953,11 @@ function SugestoesTab() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <GlassCard>
         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Sugestões — Modelo Poisson</div>
-        <div style={{ color: T.muted, fontSize: 12, marginBottom: 18 }}>Probabilidades calculadas via Distribuição de Poisson (λ por time). Fair Odds sem margem das casas.</div>
+        <div style={{ color: T.muted, fontSize: 12, marginBottom: 18, display:'flex', alignItems:'center', gap:8 }}>
+          Probabilidades calculadas via Distribuição de Poisson (λ por time). Fair Odds sem margem das casas.
+          {fonte && <span style={{background: fonte.includes('FotMob')?`${T.success}22`:`${T.primary}22`, color: fonte.includes('FotMob')?T.success:T.accent, border:`1px solid ${fonte.includes('FotMob')?T.success:T.primary}44`, borderRadius:6, padding:'1px 8px', fontSize:10, fontWeight:700}}>{fonte}</span>}
+          {xgStatus && <span style={{background: xgStatus==='xG⚡'?`${T.warning}22`:`${T.muted}22`, color: xgStatus==='xG⚡'?T.warning:T.muted, border:`1px solid ${xgStatus==='xG⚡'?T.warning:T.muted}44`, borderRadius:6, padding:'1px 8px', fontSize:10, fontWeight:700}}>{xgStatus==='xG⚡'?'λ via xG':'λ via W/D/L'}</span>}
+        </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10, alignItems: 'end' }}>
           <div>
             <Lbl>COMPETIÇÃO</Lbl>
@@ -1032,10 +1215,61 @@ function ScoutsTab() {
   const [loading,  setLoading]  = useState(false)
   const [selected, setSelected] = useState(null)
   const [searched, setSearched] = useState(false)
+  const [fonteSc,  setFonteSc]  = useState('')
 
   async function buscar() {
     setLoading(true); setSearched(true); setSelected(null)
-    try { setEvents(await fetchESPN(liga.id, date)) } catch { setEvents([]) }
+    setFonteSc('...')
+    try {
+      // Tenta FotMob primeiro
+      const fotmobMatches = await fetchFotMobLeague(liga.id, date)
+      if (fotmobMatches.length > 0) {
+        // Adapta FotMob → formato compatível com ScoutCard
+        const adapted = fotmobMatches.map(m => ({
+          id: m.id,
+          _fotmob: m,
+          date: m.status?.utcTime,
+          status: {
+            type: {
+              completed: m.status?.finished,
+              name: m.status?.started ? 'STATUS_IN_PROGRESS' : 'STATUS_SCHEDULED',
+            }
+          },
+          competitions: [{
+            competitors: [
+              {
+                homeAway: 'home',
+                score: m.home?.score,
+                team: {
+                  displayName: m.home?.name,
+                  shortDisplayName: m.home?.shortName,
+                  logo: `https://images.fotmob.com/image_resources/logo/teamlogo/${m.home?.id}_small.png`,
+                },
+                records: [{ summary: m.home?.stats?.seasonRecord || null }],
+              },
+              {
+                homeAway: 'away',
+                score: m.away?.score,
+                team: {
+                  displayName: m.away?.name,
+                  shortDisplayName: m.away?.shortName,
+                  logo: `https://images.fotmob.com/image_resources/logo/teamlogo/${m.away?.id}_small.png`,
+                },
+                records: [{ summary: m.away?.stats?.seasonRecord || null }],
+              },
+            ]
+          }]
+        }))
+        setEvents(adapted)
+        setFonteSc('FotMob ⚡')
+      } else {
+        // Fallback ESPN
+        setEvents(await fetchESPN(liga.id, date))
+        setFonteSc('ESPN')
+      }
+    } catch {
+      try { setEvents(await fetchESPN(liga.id, date)); setFonteSc('ESPN') } catch { setEvents([]) }
+    }
     setLoading(false)
   }
 
@@ -1051,7 +1285,10 @@ function ScoutsTab() {
       <GlassCard>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
           <div>
-            <div style={{ fontWeight: 700, fontSize: 15 }}>Scouts de Partidas</div>
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <div style={{ fontWeight: 700, fontSize: 15 }}>Scouts de Partidas</div>
+              {fonteSc && <span style={{background:fonteSc.includes('FotMob')?`${T.success}22`:`${T.primary}22`,color:fonteSc.includes('FotMob')?T.success:T.accent,border:`1px solid ${fonteSc.includes('FotMob')?T.success:T.primary}44`,borderRadius:6,padding:'1px 8px',fontSize:10,fontWeight:700}}>{fonteSc}</span>}
+            </div>
             {aoVivoCount > 0 && <div style={{ fontSize: 11, color: T.dangerSoft, fontWeight: 700, marginTop: 2 }}>{aoVivoCount} partida(s) ao vivo</div>}
           </div>
         </div>
