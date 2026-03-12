@@ -242,6 +242,51 @@ async function fetchESPNRange(leagueId, days = 7) {
   return results.flat()
 }
 
+// ===================== GLOBO / CARTOLA SERVICE =====================
+// Cartola FC API — aberta, rica em scouts ao vivo para futebol brasileiro
+// Proxy em /api/globo resolve CORS
+// Disponível apenas durante temporada do Brasileirão (Jan–Dez)
+
+const CARTOLA_POSICOES = { 1:'GOL', 2:'LAT', 3:'ZAG', 4:'MEI', 5:'ATA', 6:'TEC' }
+const SCOUT_LABELS = {
+  DS:'Desarmes', FC:'Faltas Cometidas', GC:'Gols Contra', CA:'Cartão Amarelo',
+  CV:'Cartão Vermelho', FD:'Fin. Defendidas', FF:'Fin. Fora', FS:'Faltas Sofridas',
+  FT:'Fin. Trave', G:'Gols', GS:'Gols Sofridos', I:'Impedimentos',
+  PP:'Pênalti Perdido', PS:'Pênalti Sofrido', RB:'Roubadas de Bola',
+  SG:'Sem Sofrer Gol', DD:'Defesas Difíceis', DP:'Def. Pênalti', A:'Assistências',
+}
+
+const globoCache = {}
+
+async function fetchGlobo(endpoint, params = {}) {
+  const qs  = new URLSearchParams({ endpoint, ...params }).toString()
+  const key = qs
+  if (globoCache[key]) return globoCache[key]
+  try {
+    const data = await safeFetch(`/api/globo?${qs}`)
+    globoCache[key] = data
+    return data
+  } catch (e) {
+    console.warn('Globo/Cartola error:', e.message)
+    return null
+  }
+}
+
+// Busca partidas da rodada atual via Cartola
+async function fetchCartolaParts() {
+  return fetchGlobo('partidas')
+}
+
+// Busca scouts ao vivo por clube
+async function fetchCartolaScouts() {
+  return fetchGlobo('scouts')
+}
+
+// Busca atletas pontuados com scouts detalhados
+async function fetchCartolaPontuados() {
+  return fetchGlobo('pontuados')
+}
+
 // ===================== FOTMOB SERVICE =====================
 // FotMob tem dados muito mais ricos que ESPN: xG, stats, escalações, ao vivo
 // Proxy Vercel em /api/fotmob resolve CORS
@@ -1215,12 +1260,57 @@ function ScoutsTab() {
   const [loading,  setLoading]  = useState(false)
   const [selected, setSelected] = useState(null)
   const [searched, setSearched] = useState(false)
-  const [fonteSc,  setFonteSc]  = useState('')
+  const [fonteSc,     setFonteSc]     = useState('')
+  const [cartolaData, setCartolaData] = useState(null)
 
   async function buscar() {
     setLoading(true); setSearched(true); setSelected(null)
     setFonteSc('...')
     try {
+      // Para ligas brasileiras: tenta Cartola FC primeiro (dados mais ricos para BR)
+      const isBrasil = ['bra.1','bra.2'].includes(liga.id)
+      if (isBrasil) {
+        const cartola = await fetchCartolaParts()
+        if (cartola?.partidas?.length) {
+          // Filtra partidas da data selecionada
+          const dataFiltro = date
+          const partidasDia = cartola.partidas.filter(p => p.data?.slice(0,10) === dataFiltro)
+          const fonte = partidasDia.length > 0 ? partidasDia : cartola.partidas
+
+          const adapted = fonte.map(p => ({
+            id: p.id,
+            _cartola: p,
+            date: p.data,
+            status: {
+              type: {
+                completed: p.placar_casa !== null && !p.ao_vivo,
+                name: p.ao_vivo ? 'STATUS_IN_PROGRESS' : p.placar_casa !== null ? 'STATUS_FINAL' : 'STATUS_SCHEDULED',
+              }
+            },
+            competitions: [{
+              competitors: [
+                {
+                  homeAway: 'home',
+                  score: p.placar_casa,
+                  team: { displayName: p.clube_casa?.nome, shortDisplayName: p.clube_casa?.abrev, logo: p.clube_casa?.escudo },
+                  records: [{ summary: null }],
+                },
+                {
+                  homeAway: 'away',
+                  score: p.placar_fora,
+                  team: { displayName: p.clube_fora?.nome, shortDisplayName: p.clube_fora?.abrev, logo: p.clube_fora?.escudo },
+                  records: [{ summary: null }],
+                },
+              ]
+            }]
+          }))
+          setEvents(adapted)
+          setFonteSc('Cartola FC 🇧🇷')
+          setLoading(false)
+          return
+        }
+      }
+
       // Tenta FotMob primeiro
       const fotmobMatches = await fetchFotMobLeague(liga.id, date)
       if (fotmobMatches.length > 0) {
